@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body { @apply bg-paper text-ink font-sans antialiased; }
+:focus-visible { outline: 3px solid #2f4bff; outline-offset: 2px; }
+
+@keyframes flash { from { opacity: 1; } to { opacity: 0; } }
+.flash { animation: flash 0.35s ease-out forwards; }
+@media (prefers-reduced-motion: reduce) { .flash { animation-duration: 0.01s; } }
