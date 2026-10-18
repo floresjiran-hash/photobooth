@@ -97,3 +97,17 @@ export async function analyze(img: HTMLImageElement, key: string, needMask: bool
   if (needFaces && !a.faces) a.faces = await facesFor(img);
   return a;
 }
+
+let liveP: Promise<FaceLandmarker> | null = null;
+
+/** Face tracker for the live camera (video mode, fewer faces to stay fast). */
+export function liveLandmarker(): Promise<FaceLandmarker> {
+  if (!liveP) {
+    const p = load().then(({ mp, files }) => withFallback((delegate) => mp.FaceLandmarker.createFromOptions(files, {
+      baseOptions: { modelAssetPath: FACE_MODEL, delegate }, runningMode: "VIDEO", numFaces: 3,
+    })));
+    p.catch(() => { if (liveP === p) liveP = null; });
+    liveP = p;
+  }
+  return liveP as Promise<FaceLandmarker>;
+}

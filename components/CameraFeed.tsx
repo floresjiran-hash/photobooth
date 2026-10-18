@@ -3,12 +3,23 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Camera, Loader2 } from "lucide-react";
 import { supabase, BUCKET } from "@/lib/supabase";
 import { beep } from "@/lib/audio";
+import { liveLandmarker, type Pt } from "@/lib/vision";
+import { drawProps, PROPS } from "@/lib/magic";
 
 const FILTERS = {
   none: { label: "Color", css: "none" },
   bw: { label: "B&W", css: "grayscale(1) contrast(1.1)" },
+  noir: { label: "Noir", css: "grayscale(1) contrast(1.6) brightness(.85)" },
   sepia: { label: "Sepia", css: "sepia(1)" },
   vintage: { label: "Vintage", css: "sepia(.45) contrast(1.1) saturate(1.3) hue-rotate(-10deg) brightness(.95)" },
+  warm: { label: "Warm", css: "sepia(.25) saturate(1.3) brightness(1.05)" },
+  cool: { label: "Cool", css: "saturate(1.1) hue-rotate(12deg) brightness(1.02)" },
+  fade: { label: "Fade", css: "contrast(.85) brightness(1.1) saturate(.8)" },
+  pop: { label: "Pop", css: "saturate(1.7) contrast(1.15)" },
+  dreamy: { label: "Dreamy", css: "blur(.6px) brightness(1.12) saturate(1.25) contrast(.95)" },
+  sunset: { label: "Sunset", css: "sepia(.35) saturate(1.8) hue-rotate(-18deg) brightness(1.05)" },
+  cyber: { label: "Cyber", css: "hue-rotate(180deg) saturate(2) contrast(1.1)" },
+  negative: { label: "Negative", css: "invert(1)" },
 } as const;
 type FilterKey = keyof typeof FILTERS;
 
@@ -31,6 +42,13 @@ export default function CameraFeed() {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [last, setLast] = useState<string[]>([]);
+  const [props, setProps] = useState<string[]>([]);
+  const [aiState, setAiState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const overlayRef = useRef<HTMLCanvasElement>(null);
+  const propsRef = useRef<string[]>([]);
+  const facesRef = useRef<Pt[][]>([]);
+  const arOn = props.length > 0;
+  useEffect(() => { propsRef.current = props; }, [props]);
 
   // --- Device discovery + auto-select external cameras -------------------
   const refreshDevices = useCallback(async (initial = false) => {
@@ -83,6 +101,37 @@ export default function CameraFeed() {
 
   useEffect(() => () => streamRef.current?.getTracks().forEach((t) => t.stop()), []);
 
+  // --- Live face props: track faces and draw items on an overlay ---------
+  useEffect(() => {
+    if (!arOn) { facesRef.current = []; setAiState("idle"); return; }
+    let stop = false, raf = 0, lastT = 0;
+    (async () => {
+      try {
+        setAiState("loading");
+        const lm = await liveLandmarker();
+        if (stop) return;
+        setAiState("ready");
+        const tick = (now: number) => {
+          raf = requestAnimationFrame(tick);
+          const v = videoRef.current, c = overlayRef.current;
+          if (!v || !c || !v.videoWidth || v.readyState < 2 || now - lastT < 33) return; // ~30 fps
+          lastT = now;
+          if (c.width !== v.videoWidth) { c.width = v.videoWidth; c.height = v.videoHeight; }
+          facesRef.current = lm.detectForVideo(v, now).faceLandmarks.map((f) => f.map((p) => ({ x: p.x, y: p.y })));
+          const ctx = c.getContext("2d")!;
+          ctx.clearRect(0, 0, c.width, c.height);
+          drawProps(ctx, facesRef.current, propsRef.current, c.width, c.height, performance.now() / 1000);
+        };
+        raf = requestAnimationFrame(tick);
+      } catch { if (!stop) setAiState("error"); }
+    })();
+    return () => {
+      stop = true; cancelAnimationFrame(raf);
+      const c = overlayRef.current;
+      c?.getContext("2d")?.clearRect(0, 0, c.width, c.height);
+    };
+  }, [arOn]);
+
   // --- Capture + upload ---------------------------------------------------
   function grab(): Promise<Blob> {
     const v = videoRef.current!;
@@ -92,6 +141,8 @@ export default function CameraFeed() {
     const ctx = c.getContext("2d")!;
     ctx.filter = FILTERS[filter].css; // not supported in older Safari: photo saves unfiltered there
     ctx.drawImage(v, 0, 0);
+    ctx.filter = "none";
+    drawProps(ctx, facesRef.current, propsRef.current, c.width, c.height, performance.now() / 1000); // bake the props into the photo
     return new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("Capture failed"))), "image/jpeg", 0.92));
   }
 
@@ -145,6 +196,7 @@ export default function CameraFeed() {
     <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
       <div className="relative overflow-hidden rounded-3xl bg-ink aspect-video">
         <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-cover" style={{ filter: FILTERS[filter].css }} />
+        <canvas ref={overlayRef} aria-hidden className="pointer-events-none absolute inset-0 h-full w-full object-cover" />
         {count !== null && (
           <div className="absolute inset-0 grid place-items-center pointer-events-none" aria-live="assertive">
             <span key={count} className="font-display text-[14rem] font-extrabold text-white drop-shadow-[0_4px_24px_rgba(0,0,0,.6)]">{count}</span>
@@ -165,14 +217,31 @@ export default function CameraFeed() {
 
         <fieldset>
           <legend className="font-semibold">Filter</legend>
-          <div className="mt-2 grid grid-cols-2 gap-2">
+          <div className="mt-2 grid grid-cols-3 gap-2">
             {(Object.keys(FILTERS) as FilterKey[]).map((k) => (
               <button key={k} onClick={() => setFilter(k)} disabled={busy} aria-pressed={filter === k}
-                className={`rounded-xl px-3 py-2 text-sm font-semibold border-2 ${filter === k ? "border-cobalt bg-cobalt text-white" : "border-ink/15"}`}>
+                className={`rounded-xl px-2 py-2 text-xs font-semibold border-2 ${filter === k ? "border-cobalt bg-cobalt text-white" : "border-ink/15"}`}>
                 {FILTERS[k].label}
               </button>
             ))}
           </div>
+        </fieldset>
+
+        <fieldset>
+          <legend className="font-semibold">Face filters (live)</legend>
+          <div className="mt-2 flex snap-x gap-2 overflow-x-auto pb-2">
+            {PROPS.map(([id, label, icon]) => {
+              const on = props.includes(id);
+              return (
+                <button key={id} title={label} aria-label={label} aria-pressed={on} disabled={busy}
+                  onClick={() => setProps((l) => (on ? l.filter((x) => x !== id) : [...l, id]))}
+                  className={`flex w-16 shrink-0 snap-start flex-col items-center gap-1 rounded-xl border-2 py-2 text-[10px] font-semibold ${on ? "border-cobalt bg-cobalt/10" : "border-ink/15"}`}><span className="text-2xl leading-none">{icon}</span>{label}</button>
+              );
+            })}
+          </div>
+          {arOn && <button onClick={() => setProps([])} disabled={busy} className="mt-2 text-sm font-semibold text-cobalt underline">Clear props</button>}
+          {aiState === "loading" && <p className="mt-2 flex items-center gap-2 text-xs text-ink/60"><Loader2 size={12} className="animate-spin" /> Loading face tracking…</p>}
+          {aiState === "error" && <p role="alert" className="mt-2 text-xs text-red-600">Couldn't load face tracking. Check the internet connection.</p>}
         </fieldset>
 
         <fieldset>
