@@ -1,14 +1,16 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, Lock, Printer, RotateCcw, Trash2, Plus } from "lucide-react";
+import { Download, Loader2, Lock, Printer, RotateCcw, Trash2, Plus } from "lucide-react";
 import type { Photo } from "@/lib/supabase";
 import PaymentModal from "./PaymentModal";
+import { analyze } from "@/lib/vision";
+import { renderMagic, SCENES, PROPS, type BgMode } from "@/lib/magic";
 
 type Layout = "single" | "grid" | "strip" | "double";
 type Theme = "none" | "minimal" | "family" | "birthday" | "vintage" | "film" | "hearts" | "stars" | "neon";
 type Sticker = { id: number; kind: "emoji" | "text"; text: string; color: string; nx: number; ny: number; size: number; rot: number };
 type Rect = { x: number; y: number; w: number; h: number };
-type Tab = "layout" | "style" | "text" | "props";
+type Tab = "layout" | "style" | "text" | "props" | "magic";
 
 const K = 1.5; // render scale: single/grid = 1800px wide, one strip = 900px
 const EMOJIS = ["😎", "🕶️", "🎩", "👑", "🥳", "❤️", "⭐", "🎈", "💬", "👒", "🎀", "🦄", "🎂", "🎁", "🌈", "🔥", "✨", "💖", "🐱", "🐶", "🌸", "🍕", "🎸", "🎄"];
@@ -50,7 +52,7 @@ function rng(seed: number) { // deterministic scatter
   return () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
 
-function drawPhoto(ctx: CanvasRenderingContext2D, img: HTMLImageElement, r: Rect, radius: number, filter: string) {
+function drawPhoto(ctx: CanvasRenderingContext2D, img: HTMLImageElement | HTMLCanvasElement, r: Rect, radius: number, filter: string) {
   ctx.save();
   ctx.beginPath(); ctx.roundRect(r.x, r.y, r.w, r.h, radius); ctx.clip();
   ctx.filter = filter; // ignored by older Safari: photo stays unfiltered there
@@ -145,13 +147,41 @@ export default function PhotoEditor({ photo, siblings, onRefresh }: { photo: Pho
   const [newText, setNewText] = useState("");
   const [imgs, setImgs] = useState<HTMLImageElement[]>([]);
   const [payOpen, setPayOpen] = useState(false);
+  const [bgMode, setBgMode] = useState<BgMode>("none");
+  const [bgColor, setBgColor] = useState("#2bd9a0");
+  const [scene, setScene] = useState(0);
+  const [smooth, setSmooth] = useState(0);
+  const [magicProps, setMagicProps] = useState<string[]>([]);
+  const [proc, setProc] = useState<HTMLCanvasElement[] | null>(null);
+  const [magicStatus, setMagicStatus] = useState<"idle" | "working" | "ready" | "error">("idle");
 
   const urls = (siblings.length ? siblings : [photo]).map((p) => p.image_url);
   const urlKey = urls.join("|");
   useEffect(() => { Promise.all(urls.map(loadImg)).then(setImgs).catch(() => setImgs([])); /* eslint-disable-next-line */ }, [urlKey]);
 
+  // AI pass: background removal + face effects. Models load on first use; results are cached per photo.
+  const magicOn = bgMode !== "none" || smooth > 0 || magicProps.length > 0;
+  useEffect(() => {
+    if (!magicOn || !imgs.length) { setProc(null); setMagicStatus("idle"); return; }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        setMagicStatus("working");
+        const outs: HTMLCanvasElement[] = [];
+        for (let i = 0; i < imgs.length; i++) {
+          const a = await analyze(imgs[i], urls[i], bgMode !== "none", smooth > 0 || magicProps.length > 0);
+          if (cancelled) return;
+          outs.push(renderMagic(imgs[i], a.mask, a.faces ?? [], { bg: bgMode, color: bgColor, scene, smooth, props: magicProps }));
+        }
+        if (!cancelled) { setProc(outs); setMagicStatus("ready"); }
+      } catch { if (!cancelled) { setProc(null); setMagicStatus("error"); } }
+    }, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+    // eslint-disable-next-line
+  }, [imgs, urlKey, bgMode, bgColor, scene, smooth, magicProps]);
+
   const pickTheme = (t: Theme) => { setTheme(t); setGrad(null); setBg(THEMES[t].bg); setTextColor(THEMES[t].text); };
-  const reset = () => { setLayout("strip"); setStripCount(4); setGapPx(16); setRadius(0); pickTheme("minimal"); setBorder(40); setFilter("none"); setFs(1); setStickers([]); setSelected(null); };
+  const reset = () => { setLayout("strip"); setStripCount(4); setGapPx(16); setRadius(0); pickTheme("minimal"); setBorder(40); setFilter("none"); setFs(1); setStickers([]); setSelected(null); setBgMode("none"); setSmooth(0); setMagicProps([]); };
 
   const draw = useCallback(() => {
     const c = canvasRef.current;
@@ -160,7 +190,8 @@ export default function PhotoEditor({ photo, siblings, onRefresh }: { photo: Pho
     const hasText = !!title.trim() || showDate;
     const textH = hasText ? 170 * K * fs : 0;
     const current = Math.max(0, siblings.findIndex((s) => s.id === photo.id));
-    const pic = (i: number) => imgs[(current + i) % imgs.length];
+    const srcs = proc ?? imgs;
+    const pic = (i: number) => srcs[(current + i) % srcs.length];
 
     let W = 1200 * K, H = 1600 * K, pw = W;
     let cells: Rect[] = [], centers: number[] = [W / 2], order: number[] = [0];
@@ -220,7 +251,7 @@ export default function PhotoEditor({ photo, siblings, onRefresh }: { photo: Pho
       for (let y = -H; y < H * 1.5; y += W / 4) for (let x = -W; x < W * 1.5; x += W * 0.9) { ctx.fillText(WATERMARK, x, y); ctx.strokeText(WATERMARK, x, y); }
       ctx.restore();
     }
-  }, [imgs, siblings, photo, layout, stripCount, gapPx, radius, theme, bg, grad, textColor, border, filter, title, showDate, font, fs, stickers, selected]);
+  }, [imgs, proc, siblings, photo, layout, stripCount, gapPx, radius, theme, bg, grad, textColor, border, filter, title, showDate, font, fs, stickers, selected]);
 
   useEffect(draw, [draw]);
 
@@ -268,13 +299,16 @@ export default function PhotoEditor({ photo, siblings, onRefresh }: { photo: Pho
 
   const chip = (on: boolean) => `rounded-xl border-2 px-3 py-2 text-sm font-semibold transition ${on ? "border-cobalt bg-cobalt text-white" : "border-ink/10 hover:border-ink/30"}`;
   const h3 = "mb-2 text-xs font-bold uppercase tracking-widest text-ink/50";
-  const TABS: [Tab, string][] = [["layout", "Layout"], ["style", "Style"], ["text", "Text"], ["props", "Props"]];
+  const TABS: [Tab, string][] = [["layout", "Layout"], ["style", "Style"], ["text", "Text"], ["props", "Props"], ["magic", "Magic"]];
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
-      <div className="grid place-items-center rounded-3xl bg-ink/[0.04] p-6 ring-1 ring-ink/5 lg:sticky lg:top-6 lg:self-start">
+      <div className="relative grid place-items-center rounded-3xl bg-ink/[0.04] p-6 ring-1 ring-ink/5 lg:sticky lg:top-6 lg:self-start">
         <canvas ref={canvasRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={() => (drag.current = null)}
           className="max-h-[78vh] max-w-full touch-none rounded-md shadow-2xl" aria-label="Photo preview" />
+        {magicStatus === "working" && (
+          <span className="absolute left-4 top-4 inline-flex items-center gap-2 rounded-full bg-ink/80 px-3 py-1.5 text-xs font-semibold text-white"><Loader2 size={14} className="animate-spin" /> Applying magic…</span>
+        )}
       </div>
 
       <aside className="flex flex-col overflow-hidden rounded-3xl bg-white shadow-xl ring-1 ring-ink/5">
@@ -352,6 +386,43 @@ export default function PhotoEditor({ photo, siblings, onRefresh }: { photo: Pho
               </div>
             </section>
           )}
+
+          {tab === "magic" && (<>
+            <section>
+              <h3 className={h3}>AI background</h3>
+              <div className="grid grid-cols-3 gap-2">
+                {([["none", "Original"], ["remove", "Remove"], ["blur", "Blur"], ["color", "Color"], ["scene", "Scene"]] as const).map(([k, l]) => <button key={k} className={chip(bgMode === k)} onClick={() => setBgMode(k)}>{l}</button>)}
+              </div>
+              {bgMode === "color" && <label className="mt-3 flex items-center gap-2 text-sm">Backdrop color <input type="color" value={bgColor} onChange={(e) => setBgColor(e.target.value)} /></label>}
+              {bgMode === "scene" && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {SCENES.map(([name, a, b], i) => <button key={name} onClick={() => setScene(i)} aria-label={name} title={name} className={`size-9 rounded-full ring-2 ${scene === i ? "ring-cobalt" : "ring-ink/10"}`} style={{ background: `linear-gradient(135deg, ${a}, ${b})` }} />)}
+                </div>
+              )}
+              {bgMode === "remove" && <p className="mt-2 text-xs text-ink/60">Removed areas show your frame color. Change it in the Style tab.</p>}
+            </section>
+            <section className="space-y-2">
+              <h3 className={h3}>Skin smoothing</h3>
+              <Slider label="Amount" value={smooth} min={0} max={1} step={0.05} onChange={setSmooth} />
+            </section>
+            <section>
+              <h3 className={h3}>Face props (follow the face)</h3>
+              <div className="grid grid-cols-5 gap-2">
+                {PROPS.map(([id, label, icon]) => {
+                  const on = magicProps.includes(id);
+                  return (
+                    <button key={id} aria-pressed={on} title={label} onClick={() => setMagicProps((l) => (on ? l.filter((x) => x !== id) : [...l, id]))}
+                      className={`flex flex-col items-center gap-1 rounded-xl border-2 py-2 text-[10px] font-semibold ${on ? "border-cobalt bg-cobalt/10" : "border-ink/10"}`}>
+                      <span className="text-2xl leading-none">{icon}</span>{label}
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+            {magicStatus === "working" && <p className="flex items-center gap-2 text-sm text-ink/70"><Loader2 size={14} className="animate-spin" /> Loading AI the first time can take a few seconds…</p>}
+            {magicStatus === "error" && <p role="alert" className="text-sm text-red-600">Couldn't load the AI models. Check your internet connection and try again.</p>}
+            {magicStatus === "ready" && magicProps.length > 0 && <p className="text-xs text-ink/60">No face found in a photo? Props only appear on photos where a face is detected.</p>}
+          </>)}
 
           {tab === "props" && (<>
             <section>
