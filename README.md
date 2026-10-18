@@ -1,0 +1,2 @@
+# photobooth
+private photobooth
