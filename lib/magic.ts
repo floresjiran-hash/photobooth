@@ -1,5 +1,9 @@
 import type { Pt } from "./vision";
 
+// When true, the dog / bear / Roblox props are drawn as 3D models, so the flat versions skip them
+let use3d = false;
+export const setUse3d = (v: boolean) => { use3d = v; };
+
 export type Expr = { jaw: number; blinkL: number; blinkR: number; smile: number }; // live facial expression scores (0..1)
 export type BgMode = "none" | "remove" | "blur" | "color" | "scene";
 export type MagicOpts = { bg: BgMode; color: string; scene: number; smooth: number; props: string[] };
@@ -9,10 +13,7 @@ export const SCENES: [string, string, string][] = [
   ["Studio", "#e6e6e6", "#9a9a9a"], ["Forest", "#134e5e", "#71b280"], ["Candy", "#ff9a9e", "#fad0c4"],
 ];
 export const PROPS: [string, string, string][] = [
-  ["dog", "Puppy", "🐶"], ["kitty", "Kitty", "🐱"], ["flowers", "Flowers", "🌸"], ["hearteyes", "Heart eyes", "😍"], ["halo", "Angel", "😇"],
-  ["devil", "Devil", "😈"], ["glam", "Glam", "💄"], ["sparkle", "Sparkle", "✨"], ["starshades", "Star shades", "⭐"], ["hearts", "Love", "💕"],
-  ["shades", "Shades", "🕶️"], ["round", "Glasses", "👓"], ["hat", "Top hat", "🎩"], ["crown", "Crown", "👑"], ["bow", "Bow", "🎀"],
-  ["cat", "Cat ears", "🐱"], ["bunny", "Bunny ears", "🐰"], ["stache", "Mustache", "🥸"], ["blush", "Blush", "😊"], ["clown", "Red nose", "🤡"],
+  ["dog", "Snap Dog", "🐶"], ["bear", "Glitter Bear", "🐻"], ["roblox", "Roblox", "🧢"],
 ];
 
 // MediaPipe face-mesh landmark groups
@@ -144,6 +145,7 @@ export function renderMagic(img: HTMLImageElement, mask: HTMLCanvasElement | und
     ctx.drawImage(person, 0, 0);
   } else ctx.drawImage(base, 0, 0);
 
+  if (faces[0]) sampleSkin(base, w, h, faces[0]);
   faces.forEach((f) => { const g = geometry(f, w, h); o.props.forEach((p) => drawProp(ctx, p, g, 1)); });
   return out;
 }
@@ -179,7 +181,7 @@ export function drawProps(ctx: CanvasRenderingContext2D, faces: Pt[][], ids: str
 }
 
 // ---------- Snapchat-style looks (vector art, animated with t = seconds) ----------
-export type Geo = ReturnType<typeof geometry>;
+type Geo = ReturnType<typeof geometry>;
 
 const heart = (ctx: CanvasRenderingContext2D, x: number, y: number, r: number) => {
   ctx.beginPath(); ctx.moveTo(x, y + r * 0.9);
@@ -201,22 +203,102 @@ function drawLook(ctx: CanvasRenderingContext2D, id: string, g: Geo, t: number) 
   const at = (p: Pt, ds: number, du: number) => ({ x: p.x + s.x * ds * g.cy + u.x * du, y: p.y + s.y * ds * g.cy + u.y * du });
   const grad = (a: Pt, b: Pt, c0: string, c1: string) => { const gr = ctx.createLinearGradient(a.x, a.y, b.x, b.y); gr.addColorStop(0, c0); gr.addColorStop(1, c1); return gr; };
   ctx.save();
-  if (id === "dog") {
+  if (id === "dog" && use3d) {
+    // drawn as a real 3D model (lib/face3d.ts)
+  } else if (id === "dog") {
+    // Classic Snapchat dog: floppy tan ears with pink insides, tan snout pad, brown nose, tongue when you open your mouth
     const sw = swing(g, t);
+    const ear = () => { ctx.beginPath(); ctx.moveTo(-fw * 0.12, fw * 0.3); ctx.bezierCurveTo(-fw * 0.22, -fw * 0.02, -fw * 0.1, -fw * 0.24, fw * 0.03, -fw * 0.22); ctx.bezierCurveTo(fw * 0.17, -fw * 0.2, fw * 0.21, fw * 0.08, fw * 0.12, fw * 0.3); ctx.closePath(); };
     for (const sign of [-1, 1]) {
-      const c = at(g.top, sign * fw * 0.42, -fw * 0.05);
-      ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(g.roll + sign * 0.35 + sw);
-      ctx.fillStyle = grad({ x: 0, y: -fw * 0.2 }, { x: 0, y: fw * 0.4 }, "#b07a52", "#6b4226");
-      ctx.beginPath(); ctx.ellipse(0, fw * 0.12, fw * 0.13, fw * 0.28, 0, 0, 7); ctx.fill(); ctx.restore();
+      const c = at(g.top, sign * fw * 0.46, -fw * 0.02);
+      ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(g.roll + sign * 0.5 + sw); ctx.scale(g.cy, 1);
+      ctx.fillStyle = grad({ x: 0, y: -fw * 0.2 }, { x: 0, y: fw * 0.3 }, "#d1a066", "#9c6c3c"); ear(); ctx.fill();
+      ctx.strokeStyle = "rgba(90,55,25,.35)"; ctx.lineWidth = fw * 0.01; ctx.stroke();
+      ctx.save(); ctx.translate(-sign * fw * 0.02, fw * 0.04); ctx.scale(0.6, 0.6); ctx.fillStyle = "#e9aaa6"; ear(); ctx.fill(); ctx.restore();
+      ctx.restore();
     }
-    ctx.save(); ctx.translate(g.nose.x, g.nose.y); ctx.rotate(g.roll);
-    ctx.fillStyle = "#1d1d22"; ctx.beginPath(); ctx.ellipse(0, 0, fw * 0.075, fw * 0.055, 0, 0, 7); ctx.fill();
-    ctx.fillStyle = "rgba(255,255,255,.55)"; ctx.beginPath(); ctx.ellipse(-fw * 0.025, -fw * 0.02, fw * 0.022, fw * 0.012, 0, 0, 7); ctx.fill(); ctx.restore();
-    if (g.open > 0.05) { // tongue only when the mouth is open
-      const len = fw * (0.12 + Math.min(g.open, 0.3) * 0.5);
+    const pad = at(g.nose, 0, -fw * 0.06), nz = at(g.nose, 0, -fw * 0.02);
+    ctx.save(); ctx.translate(pad.x, pad.y); ctx.rotate(g.roll); ctx.scale(g.cy, 1);
+    ctx.shadowColor = "rgba(60,35,10,.35)"; ctx.shadowBlur = fw * 0.03;
+    ctx.fillStyle = grad({ x: 0, y: -fw * 0.1 }, { x: 0, y: fw * 0.12 }, "#d6a96f", "#a4743f"); ctx.beginPath(); ctx.ellipse(0, 0, fw * 0.17, fw * 0.12, 0, 0, 7); ctx.fill();
+    ctx.shadowBlur = 0; ctx.fillStyle = "rgba(80,45,20,.55)";
+    [[-0.09, 0.04], [-0.05, 0.07], [0.06, 0.06], [0.1, 0.03], [-0.11, 0.0], [0.12, -0.01]].forEach(([x, y]) => { ctx.beginPath(); ctx.arc(x * fw, y * fw, fw * 0.007, 0, 7); ctx.fill(); });
+    ctx.restore();
+    ctx.save(); ctx.translate(nz.x, nz.y); ctx.rotate(g.roll); ctx.scale(g.cy, 1);
+    ctx.fillStyle = grad({ x: 0, y: -fw * 0.06 }, { x: 0, y: fw * 0.06 }, "#5a4046", "#241719"); ctx.beginPath(); ctx.ellipse(0, 0, fw * 0.085, fw * 0.062, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,.55)"; ctx.beginPath(); ctx.ellipse(-fw * 0.025, -fw * 0.022, fw * 0.025, fw * 0.012, -0.3, 0, 7); ctx.fill(); ctx.restore();
+    if (g.open > 0.05) {
+      const len = fw * (0.14 + Math.min(g.open, 0.3) * 0.5) * (1 + 0.06 * Math.sin(t * 9)); // tongue wiggles a little
       ctx.save(); ctx.translate(g.lower.x, g.lower.y); ctx.rotate(g.roll);
-      ctx.fillStyle = grad({ x: 0, y: 0 }, { x: 0, y: len }, "#ff9db0", "#ff6f8e"); ctx.beginPath(); ctx.roundRect(-fw * 0.06, 0, fw * 0.12, len, fw * 0.06); ctx.fill();
+      ctx.fillStyle = grad({ x: 0, y: 0 }, { x: 0, y: len }, "#ff9db0", "#ff6f8e"); ctx.beginPath(); ctx.roundRect(-fw * 0.07, 0, fw * 0.14, len, fw * 0.07); ctx.fill();
       ctx.strokeStyle = "#e0607e"; ctx.lineWidth = fw * 0.008; ctx.beginPath(); ctx.moveTo(0, fw * 0.01); ctx.lineTo(0, len * 0.7); ctx.stroke(); ctx.restore();
+    }
+  } else if (id === "bear") {
+    // Glitter bear: round brown ears, dark glittery forehead, pink sparkly lower face, brown muzzle with black nose
+    const sw = swing(g, t);
+    for (const sign of use3d ? [] : [-1, 1]) {
+      const c = at(g.top, sign * fw * 0.4, fw * 0.04);
+      ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(g.roll + sign * 0.1 + sw * 0.5); ctx.scale(g.cy, 1);
+      const rg = ctx.createRadialGradient(0, 0, fw * 0.08, 0, 0, fw * 0.19); rg.addColorStop(0, "#8a5a35"); rg.addColorStop(1, "#b9854f");
+      ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(0, 0, fw * 0.19, 0, 7); ctx.fill();
+      ctx.fillStyle = "#2a1d17"; ctx.beginPath(); ctx.arc(0, fw * 0.01, fw * 0.105, 0, 7); ctx.fill(); ctx.restore();
+    }
+    const fore = [127, 162, 21, 54, 103, 67, 109, 10, 338, 297, 332, 284, 251, 389, 356, 300, 293, 334, 296, 336, 107, 66, 105, 63, 70].map((i) => g.P(i));
+    const lower = [...[234, 93, 132, 58, 172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397, 288, 361, 323, 454].map((i) => g.P(i)), at(g.P(454), 0, -fw * 0.1), at(g.P(234), 0, -fw * 0.1)];
+    const path = (pts: Pt[]) => { ctx.beginPath(); pts.forEach((q, k) => (k ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y))); ctx.closePath(); };
+    ctx.filter = `blur(${Math.max(1, fw * 0.02)}px)`; ctx.fillStyle = "rgba(28,22,22,.6)"; path(fore); ctx.fill();
+    ctx.fillStyle = "rgba(255,196,210,.3)"; path(lower); ctx.fill(); ctx.filter = "none";
+    speckle(ctx, fore, t, "255,255,255", 170, fw * 0.007); speckle(ctx, lower, t + 3, "255,236,242", 230, fw * 0.007);
+    for (const ck of [g.cheekL, g.cheekR]) { const r = fw * 0.2, gr = ctx.createRadialGradient(ck.x, ck.y, 0, ck.x, ck.y, r); gr.addColorStop(0, "rgba(255,130,160,.5)"); gr.addColorStop(1, "rgba(255,130,160,0)"); ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(ck.x, ck.y, r, 0, 7); ctx.fill(); }
+    if (!use3d) {
+    const mz = at(g.nose, 0, -fw * 0.1), nz = at(g.nose, 0, fw * 0.01);
+    ctx.save(); ctx.translate(mz.x, mz.y); ctx.rotate(g.roll); ctx.scale(g.cy, 1);
+    ctx.shadowColor = "rgba(60,35,10,.4)"; ctx.shadowBlur = fw * 0.03; ctx.fillStyle = grad({ x: 0, y: -fw * 0.2 }, { x: 0, y: fw * 0.2 }, "#b98656", "#8a5d37");
+    ctx.beginPath(); ctx.ellipse(0, 0, fw * 0.21, fw * 0.2, 0, 0, 7); ctx.fill(); ctx.restore();
+    ctx.save(); ctx.translate(nz.x, nz.y); ctx.rotate(g.roll); ctx.scale(g.cy, 1);
+    const ng = ctx.createRadialGradient(0, -fw * 0.02, fw * 0.01, 0, 0, fw * 0.1); ng.addColorStop(0, "#3a2a24"); ng.addColorStop(1, "#140d0b");
+    ctx.fillStyle = ng; ctx.beginPath(); ctx.ellipse(0, 0, fw * 0.1, fw * 0.075, 0, 0, 7); ctx.fill(); ctx.restore();
+    const l0 = at(g.nose, 0, -fw * 0.06), l1 = at(g.lip, 0, fw * 0.01);
+    ctx.strokeStyle = "#111"; ctx.lineWidth = fw * 0.014; ctx.lineCap = "round"; ctx.beginPath(); ctx.moveTo(l0.x, l0.y); ctx.lineTo(l1.x, l1.y); ctx.stroke();
+    }
+  } else if (id === "roblox") {
+    // Roblox "man face": smoothed flat skin, drawn brows/eyes/smirk, black cap with a red brim and an R
+    const sc = skin;
+    ctx.filter = `blur(${Math.max(1, fw * 0.025)}px)`; ctx.fillStyle = sc; ctx.globalAlpha = 0.94; ctx.beginPath();
+    OVAL.forEach((i, k) => { const q = g.P(i); if (k) ctx.lineTo(q.x, q.y); else ctx.moveTo(q.x, q.y); }); ctx.closePath(); ctx.fill();
+    ctx.globalAlpha = 1; ctx.filter = "none";
+    ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = "#0c0c0c";
+    [[g.eyeL, -1, g.ex?.blinkR ?? 0], [g.eyeR, 1, g.ex?.blinkL ?? 0]].forEach(([e, sign, blink]) => {
+      const E = e as Pt, sg = sign as number, bl = blink as number;
+      const o = at(E, sg * fw * 0.11, fw * 0.125), i = at(E, -sg * fw * 0.09, fw * 0.098); // brows slope down toward the nose
+      ctx.lineWidth = fw * 0.038; ctx.beginPath(); ctx.moveTo(o.x, o.y); ctx.lineTo(i.x, i.y); ctx.stroke();
+      ctx.save(); ctx.translate(E.x, E.y); ctx.rotate(g.roll); ctx.scale(g.cy, Math.max(0.08, 1 - 0.9 * bl));
+      const almond = () => { ctx.beginPath(); ctx.moveTo(-fw * 0.105, 0); ctx.quadraticCurveTo(0, -fw * 0.085, fw * 0.105, 0); ctx.quadraticCurveTo(0, fw * 0.05, -fw * 0.105, 0); ctx.closePath(); };
+      almond(); ctx.fillStyle = "#f5f5f5"; ctx.fill();
+      ctx.save(); almond(); ctx.clip(); ctx.fillStyle = "#0c0c0c"; ctx.beginPath(); ctx.ellipse(sg * -fw * 0.005, -fw * 0.006, fw * 0.036, fw * 0.04, 0, 0, 7); ctx.fill(); ctx.restore();
+      ctx.lineWidth = fw * 0.016; ctx.beginPath(); ctx.moveTo(-fw * 0.105, 0); ctx.quadraticCurveTo(0, -fw * 0.085, fw * 0.105, 0); ctx.stroke();
+      ctx.lineWidth = fw * 0.007; ctx.beginPath(); ctx.moveTo(-fw * 0.09, fw * 0.005); ctx.quadraticCurveTo(0, fw * 0.048, fw * 0.09, fw * 0.005); ctx.stroke();
+      ctx.restore();
+    });
+    ctx.lineWidth = fw * 0.008; ctx.globalAlpha = 0.7; ctx.beginPath(); const n0 = at(g.nose, fw * 0.04, fw * 0.1), n1 = at(g.nose, fw * 0.08, -fw * 0.02), nc = at(g.nose, fw * 0.1, fw * 0.04);
+    ctx.moveTo(n0.x, n0.y); ctx.quadraticCurveTo(nc.x, nc.y, n1.x, n1.y); ctx.stroke(); ctx.globalAlpha = 1;
+    if (g.open > 0.06) { // open mouth
+      ctx.save(); ctx.translate(g.mouth.x, g.mouth.y); ctx.rotate(g.roll); ctx.fillStyle = "#141414"; ctx.beginPath(); ctx.ellipse(0, 0, fw * 0.13, Math.max(fw * 0.03, g.open * fw * 0.8), 0, 0, 7); ctx.fill(); ctx.restore();
+    } else {
+      const m0 = at(g.mouth, -fw * 0.21, 0), mc = at(g.mouth, fw * 0.02, -fw * 0.05), m1 = at(g.mouth, fw * 0.25, fw * 0.045);
+      ctx.lineWidth = fw * 0.014; ctx.beginPath(); ctx.moveTo(m0.x, m0.y); ctx.quadraticCurveTo(mc.x, mc.y, m1.x, m1.y); ctx.stroke();
+    }
+    if (!use3d) {
+    const B = at(g.eye, 0, fw * 0.2);
+    ctx.save(); ctx.translate(B.x, B.y); ctx.rotate(g.roll); ctx.scale(g.cy, 1);
+    ctx.fillStyle = grad({ x: 0, y: -fw * 0.9 }, { x: 0, y: 0 }, "#2b2b2b", "#050505");
+    ctx.beginPath(); ctx.moveTo(-fw * 0.62, 0); ctx.bezierCurveTo(-fw * 0.7, -fw * 0.55, -fw * 0.35, -fw * 0.88, 0, -fw * 0.88); ctx.bezierCurveTo(fw * 0.35, -fw * 0.88, fw * 0.7, -fw * 0.55, fw * 0.62, 0); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = "#e0452b"; ctx.beginPath(); ctx.arc(0, -fw * 0.88, fw * 0.045, 0, 7); ctx.fill();
+    ctx.font = `900 ${fw * 0.55}px "Arial Black", Impact, sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.strokeStyle = "#d9381e"; ctx.lineWidth = fw * 0.05; ctx.strokeText("R", 0, -fw * 0.42); ctx.fillStyle = "#f2f2f2"; ctx.fillText("R", 0, -fw * 0.42);
+    ctx.fillStyle = grad({ x: 0, y: 0 }, { x: 0, y: fw * 0.3 }, "#e4482c", "#9d210f");
+    ctx.beginPath(); ctx.moveTo(-fw * 0.7, -fw * 0.02); ctx.quadraticCurveTo(0, fw * 0.3, fw * 0.7, -fw * 0.02); ctx.quadraticCurveTo(0, fw * 0.07, -fw * 0.7, -fw * 0.02); ctx.closePath(); ctx.fill();
+    ctx.restore();
     }
   } else if (id === "kitty") {
     drawProp(ctx, "cat", g, t);
@@ -293,4 +375,35 @@ function drawLook(ctx: CanvasRenderingContext2D, id: string, g: Geo, t: number) 
     }
   }
   ctx.restore();
+}
+
+const hash = (n: number) => { const x = Math.sin(n * 127.1) * 43758.5453; return x - Math.floor(x); };
+const SPECK = Array.from({ length: 320 }, (_, i) => [hash(i + 1), hash(i + 1000), hash(i + 2000)]);
+
+/** Twinkling glitter dots clipped to a polygon. */
+function speckle(ctx: CanvasRenderingContext2D, pts: Pt[], t: number, rgb: string, count: number, size: number) {
+  const xs = pts.map((q) => q.x), ys = pts.map((q) => q.y), x0 = Math.min(...xs), y0 = Math.min(...ys), bw = Math.max(...xs) - x0, bh = Math.max(...ys) - y0;
+  ctx.save(); ctx.beginPath(); pts.forEach((q, k) => (k ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y))); ctx.closePath(); ctx.clip();
+  for (let i = 0; i < Math.min(count, SPECK.length); i++) {
+    const [a, b, c] = SPECK[i];
+    ctx.fillStyle = `rgba(${rgb},${0.35 + 0.65 * Math.abs(Math.sin(t * 2.5 + i))})`;
+    ctx.beginPath(); ctx.arc(x0 + a * bw, y0 + b * bh, size * (0.5 + c), 0, 7); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// Average cheek colour of the real face, used to paint the flat Roblox skin
+let skin = "rgb(224,190,170)";
+let skinCanvas: HTMLCanvasElement | null = null;
+export function sampleSkin(src: CanvasImageSource, w: number, h: number, f: Pt[]) {
+  try {
+    skinCanvas ??= Object.assign(document.createElement("canvas"), { width: 1, height: 1 });
+    const c = skinCanvas.getContext("2d", { willReadFrequently: true })!;
+    let r = 0, g = 0, b = 0;
+    for (const i of [50, 280]) {
+      c.drawImage(src, f[i].x * w - 6, f[i].y * h - 6, 12, 12, 0, 0, 1, 1);
+      const d = c.getImageData(0, 0, 1, 1).data; r += d[0]; g += d[1]; b += d[2];
+    }
+    skin = `rgb(${Math.round(r / 2)},${Math.round(g / 2)},${Math.round(b / 2)})`;
+  } catch { /* keep the previous colour */ }
 }

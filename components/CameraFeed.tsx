@@ -4,7 +4,7 @@ import { Camera, Loader2 } from "lucide-react";
 import { supabase, BUCKET } from "@/lib/supabase";
 import { beep } from "@/lib/audio";
 import { liveLandmarker, type Pt } from "@/lib/vision";
-import { drawProps, PROPS, type Expr } from "@/lib/magic";
+import { drawProps, PROPS, sampleSkin, setUse3d, type Expr } from "@/lib/magic";
 
 const FILTERS = {
   none: { label: "Color", css: "none" },
@@ -54,6 +54,9 @@ export default function CameraFeed() {
   const propsRef = useRef<string[]>([]);
   const facesRef = useRef<Pt[][]>([]);
   const exprRef = useRef<Expr[]>([]);
+  const matsRef = useRef<number[][]>([]);
+  const gl3Ref = useRef<HTMLCanvasElement>(null);
+  const face3dRef = useRef<{ render: (l: Pt[][], m: number[][], ids: string[], w: number, h: number, t: number, jaw: number[]) => void; clear: () => void; nextVariant: () => void; dispose: () => void } | null>(null);
   const arOn = props.length > 0;
   useEffect(() => { propsRef.current = props; }, [props]);
 
@@ -106,17 +109,22 @@ export default function CameraFeed() {
     return () => { cancelled = true; };
   }, [deviceId]);
 
-  useEffect(() => () => streamRef.current?.getTracks().forEach((t) => t.stop()), []);
+  useEffect(() => () => { streamRef.current?.getTracks().forEach((t) => t.stop()); face3dRef.current?.dispose(); face3dRef.current = null; }, []);
 
   // --- Live face props: track faces and draw items on an overlay ---------
   useEffect(() => {
     if (!arOn) { facesRef.current = []; setAiState("idle"); return; }
-    let stop = false, raf = 0, lastT = 0;
+    let stop = false, raf = 0, lastT = 0, frameN = 0;
     (async () => {
       try {
         setAiState("loading");
         const lm = await liveLandmarker();
         if (stop) return;
+        try { // real 3D props; falls back to the flat versions if WebGL isn't available
+          const { createFace3D } = await import("@/lib/face3d");
+          if (stop) return;
+          if (gl3Ref.current) { face3dRef.current ??= createFace3D(gl3Ref.current); setUse3d(true); }
+        } catch { face3dRef.current = null; setUse3d(false); }
         setAiState("ready");
         const tick = (now: number) => {
           raf = requestAnimationFrame(tick);
@@ -126,20 +134,23 @@ export default function CameraFeed() {
           if (c.width !== v.videoWidth) { c.width = v.videoWidth; c.height = v.videoHeight; }
           const res = lm.detectForVideo(v, now);
           facesRef.current = res.faceLandmarks.map((f, i) => smoothFace(facesRef.current[i], f));
+          matsRef.current = (res.facialTransformationMatrixes ?? []).map((m) => Array.from(m.data));
           exprRef.current = (res.faceBlendshapes ?? []).map((bs) => {
             const m: Record<string, number> = {};
             bs.categories.forEach((c) => { m[c.categoryName] = c.score; });
             return { jaw: m.jawOpen ?? 0, blinkL: m.eyeBlinkLeft ?? 0, blinkR: m.eyeBlinkRight ?? 0, smile: ((m.mouthSmileLeft ?? 0) + (m.mouthSmileRight ?? 0)) / 2 };
           });
+          if (facesRef.current[0] && frameN++ % 15 === 0) sampleSkin(v, v.videoWidth, v.videoHeight, facesRef.current[0]); // skin colour for the Roblox face
           const ctx = c.getContext("2d")!;
           ctx.clearRect(0, 0, c.width, c.height);
           drawProps(ctx, facesRef.current, propsRef.current, c.width, c.height, now / 1000, exprRef.current);
+          face3dRef.current?.render(facesRef.current, matsRef.current, propsRef.current, v.videoWidth, v.videoHeight, now / 1000, exprRef.current.map((e) => e.jaw));
         };
         raf = requestAnimationFrame(tick);
       } catch { if (!stop) setAiState("error"); }
     })();
     return () => {
-      stop = true; cancelAnimationFrame(raf);
+      stop = true; cancelAnimationFrame(raf); face3dRef.current?.clear();
       const c = overlayRef.current;
       c?.getContext("2d")?.clearRect(0, 0, c.width, c.height);
     };
@@ -156,6 +167,7 @@ export default function CameraFeed() {
     ctx.drawImage(v, 0, 0);
     ctx.filter = "none";
     drawProps(ctx, facesRef.current, propsRef.current, c.width, c.height, performance.now() / 1000, exprRef.current); // bake the props into the photo
+    if (face3dRef.current && gl3Ref.current) ctx.drawImage(gl3Ref.current, 0, 0, c.width, c.height); // and the 3D models
     return new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("Capture failed"))), "image/jpeg", 0.92));
   }
 
@@ -207,9 +219,10 @@ export default function CameraFeed() {
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
-      <div className="relative overflow-hidden rounded-3xl bg-ink aspect-video">
+      <div className="relative cursor-pointer overflow-hidden rounded-3xl bg-ink aspect-video" title="Tap to change filter colors" onClick={() => face3dRef.current?.nextVariant()}>
         <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-cover" style={{ filter: FILTERS[filter].css }} />
         <canvas ref={overlayRef} aria-hidden className="pointer-events-none absolute inset-0 h-full w-full object-cover" />
+        <canvas ref={gl3Ref} aria-hidden className="pointer-events-none absolute inset-0 h-full w-full object-cover" />
         {count !== null && (
           <div className="absolute inset-0 grid place-items-center pointer-events-none" aria-live="assertive">
             <span key={count} className="font-display text-[14rem] font-extrabold text-white drop-shadow-[0_4px_24px_rgba(0,0,0,.6)]">{count}</span>
