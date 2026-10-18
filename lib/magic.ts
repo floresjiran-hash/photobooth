@@ -179,7 +179,7 @@ export function drawProps(ctx: CanvasRenderingContext2D, faces: Pt[][], ids: str
 }
 
 // ---------- Snapchat-style looks (vector art, animated with t = seconds) ----------
-type Geo = ReturnType<typeof geometry>;
+export type Geo = ReturnType<typeof geometry>;
 
 const heart = (ctx: CanvasRenderingContext2D, x: number, y: number, r: number) => {
   ctx.beginPath(); ctx.moveTo(x, y + r * 0.9);
