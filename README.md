@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Photo Booth (Next.js + Supabase)
 
 ## Setup
@@ -10,3 +11,7 @@
 
 ## Deploy
 Push to GitHub, import in Vercel, add the same env vars. Camera access needs HTTPS (Vercel provides it; localhost also works).
+=======
+# photobooth
+private photobooth
+>>>>>>> aa65a48571c0fa8e9ed30b07f4d575ff6f60416e

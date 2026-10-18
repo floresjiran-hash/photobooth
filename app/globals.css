@@ -2,9 +2,16 @@
 @tailwind components;
 @tailwind utilities;
 
-body { @apply bg-paper text-ink font-sans antialiased; }
+body {
+  @apply bg-paper text-ink font-sans antialiased;
+  background-image: radial-gradient(rgba(17, 23, 43, 0.07) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+::selection { background: #ffd23f; color: #11172b; }
 :focus-visible { outline: 3px solid #2f4bff; outline-offset: 2px; }
 
 @keyframes flash { from { opacity: 1; } to { opacity: 0; } }
 .flash { animation: flash 0.35s ease-out forwards; }
-@media (prefers-reduced-motion: reduce) { .flash { animation-duration: 0.01s; } }
+@keyframes floaty { 0%,100% { transform: translateY(0) rotate(var(--r, 0deg)); } 50% { transform: translateY(-10px) rotate(var(--r, 0deg)); } }
+.floaty { animation: floaty 6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .flash, .floaty { animation: none; } }
