@@ -104,7 +104,7 @@ let liveP: Promise<FaceLandmarker> | null = null;
 export function liveLandmarker(): Promise<FaceLandmarker> {
   if (!liveP) {
     const p = load().then(({ mp, files }) => withFallback((delegate) => mp.FaceLandmarker.createFromOptions(files, {
-      baseOptions: { modelAssetPath: FACE_MODEL, delegate }, runningMode: "VIDEO", numFaces: 3,
+      baseOptions: { modelAssetPath: FACE_MODEL, delegate }, runningMode: "VIDEO", numFaces: 3, outputFaceBlendshapes: true,
     })));
     p.catch(() => { if (liveP === p) liveP = null; });
     liveP = p;

@@ -1,5 +1,6 @@
 import type { Pt } from "./vision";
 
+export type Expr = { jaw: number; blinkL: number; blinkR: number; smile: number }; // live facial expression scores (0..1)
 export type BgMode = "none" | "remove" | "blur" | "color" | "scene";
 export type MagicOpts = { bg: BgMode; color: string; scene: number; smooth: number; props: string[] };
 
@@ -61,7 +62,7 @@ function paintBackground(ctx: CanvasRenderingContext2D, base: HTMLCanvasElement,
   } // "remove" leaves it transparent so the frame colour shows through
 }
 
-function geometry(f: Pt[], w: number, h: number) {
+function geometry(f: Pt[], w: number, h: number, ex?: Expr, id = 0) {
   const P = (i: number) => ({ x: f[i].x * w, y: f[i].y * h });
   let a = P(33), b = P(263);
   if (a.x > b.x) [a, b] = [b, a];
@@ -70,8 +71,9 @@ function geometry(f: Pt[], w: number, h: number) {
   let e1 = mid(P(33), P(133)), e2 = mid(P(362), P(263));
   if (e1.x > e2.x) [e1, e2] = [e2, e1];
   const fw = Math.hypot(l.x - r.x, l.y - r.y), up = P(13), lo = P(14);
+  const cm = mid(l, r), yaw = Math.asin(Math.max(-1, Math.min(1, (P(1).x - cm.x) / (fw * 0.3)))); // head turn left/right
   return {
-    P, eyeL: e1, eyeR: e2, mouth: mid(up, lo), lower: lo, open: Math.hypot(up.x - lo.x, up.y - lo.y) / fw, chin: P(152),
+    P, id, ex, yaw, cy: Math.cos(yaw * 0.9), eyeL: e1, eyeR: e2, mouth: mid(up, lo), lower: lo, open: ex ? ex.jaw * 0.35 : Math.hypot(up.x - lo.x, up.y - lo.y) / fw, chin: P(152),
     eye: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, roll: Math.atan2(b.y - a.y, b.x - a.x), fw,
     top: P(10), nose: P(1), lip: P(0), cheekL: P(50), cheekR: P(280),
   };
@@ -79,9 +81,9 @@ function geometry(f: Pt[], w: number, h: number) {
 
 function drawProp(ctx: CanvasRenderingContext2D, id: string, g: ReturnType<typeof geometry>, t = 0) {
   const s = { x: Math.cos(g.roll), y: Math.sin(g.roll) }, u = { x: Math.sin(g.roll), y: -Math.cos(g.roll) }; // along the eyes / up the head
-  const at = (p: Pt, ds: number, du: number) => ({ x: p.x + s.x * ds + u.x * du, y: p.y + s.y * ds + u.y * du });
+  const at = (p: Pt, ds: number, du: number) => ({ x: p.x + s.x * ds * g.cy + u.x * du, y: p.y + s.y * ds * g.cy + u.y * du });
   const emoji = (ch: string, p: Pt, size: number) => {
-    ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(g.roll); ctx.font = `${size}px serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(ch, 0, 0); ctx.restore();
+    ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(g.roll); ctx.scale(g.cy, 1); ctx.font = `${size}px serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(ch, 0, 0); ctx.restore();
   };
   const tri = (a: Pt, b: Pt, c: Pt, fill: string) => { ctx.fillStyle = fill; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.lineTo(c.x, c.y); ctx.closePath(); ctx.fill(); };
   const fw = g.fw;
@@ -97,11 +99,12 @@ function drawProp(ctx: CanvasRenderingContext2D, id: string, g: ReturnType<typeo
       tri(at(base, -fw * 0.09, 0), at(base, fw * 0.09, 0), at(base, sign * fw * 0.04, fw * 0.27), "#ff9ab8");
     }
   } else if (id === "bunny") {
+    const sw = swing(g, t);
     for (const sign of [-1, 1]) {
-      const c = at(g.top, sign * fw * 0.2, fw * 0.5);
+      const dir = g.roll + sign * 0.12 - sw, pv = at(g.top, sign * fw * 0.2, fw * 0.05), c = { x: pv.x + Math.sin(dir) * fw * 0.45, y: pv.y - Math.cos(dir) * fw * 0.45 };
       ctx.fillStyle = "#ffffff"; ctx.strokeStyle = "#d9d9e3"; ctx.lineWidth = fw * 0.012;
-      ctx.beginPath(); ctx.ellipse(c.x, c.y, fw * 0.11, fw * 0.45, g.roll + sign * 0.12, 0, 7); ctx.fill(); ctx.stroke();
-      ctx.fillStyle = "#ffb3c8"; ctx.beginPath(); ctx.ellipse(c.x, c.y, fw * 0.05, fw * 0.32, g.roll + sign * 0.12, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(c.x, c.y, fw * 0.11, fw * 0.45, dir, 0, 7); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = "#ffb3c8"; ctx.beginPath(); ctx.ellipse(c.x, c.y, fw * 0.05, fw * 0.32, dir, 0, 7); ctx.fill();
     }
   } else if (id === "stache") {
     const m = { x: g.nose.x * 0.4 + g.lip.x * 0.6, y: g.nose.y * 0.4 + g.lip.y * 0.6 }, wd = fw * 0.26, hg = fw * 0.1;
@@ -146,8 +149,33 @@ export function renderMagic(img: HTMLImageElement, mask: HTMLCanvasElement | und
 }
 
 /** Draw the chosen props on every detected face (used by the live camera). */
-export function drawProps(ctx: CanvasRenderingContext2D, faces: Pt[][], ids: string[], w: number, h: number, t = 0) {
-  faces.forEach((f) => { const g = geometry(f, w, h); ids.forEach((id) => drawProp(ctx, id, g, t)); });
+const pop = new Map<string, number>();
+const easeOutBack = (x: number) => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+
+// Spring that makes floppy ears sway when the head moves (secondary motion)
+const motion = new Map<number, { ang: number; vel: number; lx: number; lt: number }>();
+function swing(g: ReturnType<typeof geometry>, t: number) {
+  let m = motion.get(g.id);
+  if (!m) { m = { ang: 0, vel: 0, lx: g.top.x, lt: t }; motion.set(g.id, m); }
+  const dt = Math.min(0.05, Math.max(0.001, t - m.lt));
+  const dx = (g.top.x - m.lx) / g.fw / dt; // head speed in face-widths per second
+  m.vel += (-60 * m.ang - 6 * m.vel + dx * 30) * dt;
+  m.ang = Math.max(-0.6, Math.min(0.6, m.ang + m.vel * dt));
+  m.lx = g.top.x; m.lt = t;
+  return m.ang;
+}
+
+export function drawProps(ctx: CanvasRenderingContext2D, faces: Pt[][], ids: string[], w: number, h: number, t = 0, ex: (Expr | undefined)[] = []) {
+  ids.forEach((id) => { if (!pop.has(id)) pop.set(id, t); });
+  [...pop.keys()].forEach((k) => { if (!ids.includes(k)) pop.delete(k); });
+  faces.forEach((f, i) => {
+    const g = geometry(f, w, h, ex[i], i);
+    ids.forEach((id) => {
+      const k = easeOutBack(Math.min(1, (t - (pop.get(id) ?? t - 1)) / 0.4)); // filters pop in like the real apps
+      ctx.save(); ctx.translate(g.eye.x, g.eye.y); ctx.scale(k, k); ctx.translate(-g.eye.x, -g.eye.y);
+      drawProp(ctx, id, g, t); ctx.restore();
+    });
+  });
 }
 
 // ---------- Snapchat-style looks (vector art, animated with t = seconds) ----------
@@ -170,13 +198,14 @@ const star = (ctx: CanvasRenderingContext2D, x: number, y: number, r: number, n 
 function drawLook(ctx: CanvasRenderingContext2D, id: string, g: Geo, t: number) {
   const fw = g.fw;
   const s = { x: Math.cos(g.roll), y: Math.sin(g.roll) }, u = { x: Math.sin(g.roll), y: -Math.cos(g.roll) };
-  const at = (p: Pt, ds: number, du: number) => ({ x: p.x + s.x * ds + u.x * du, y: p.y + s.y * ds + u.y * du });
+  const at = (p: Pt, ds: number, du: number) => ({ x: p.x + s.x * ds * g.cy + u.x * du, y: p.y + s.y * ds * g.cy + u.y * du });
   const grad = (a: Pt, b: Pt, c0: string, c1: string) => { const gr = ctx.createLinearGradient(a.x, a.y, b.x, b.y); gr.addColorStop(0, c0); gr.addColorStop(1, c1); return gr; };
   ctx.save();
   if (id === "dog") {
+    const sw = swing(g, t);
     for (const sign of [-1, 1]) {
       const c = at(g.top, sign * fw * 0.42, -fw * 0.05);
-      ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(g.roll + sign * 0.35);
+      ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(g.roll + sign * 0.35 + sw);
       ctx.fillStyle = grad({ x: 0, y: -fw * 0.2 }, { x: 0, y: fw * 0.4 }, "#b07a52", "#6b4226");
       ctx.beginPath(); ctx.ellipse(0, fw * 0.12, fw * 0.13, fw * 0.28, 0, 0, 7); ctx.fill(); ctx.restore();
     }
@@ -211,7 +240,7 @@ function drawLook(ctx: CanvasRenderingContext2D, id: string, g: Geo, t: number) 
   } else if (id === "hearteyes") {
     const k = 1 + 0.12 * Math.sin(t * 7);
     for (const e of [g.eyeL, g.eyeR]) {
-      ctx.save(); ctx.translate(e.x, e.y); ctx.rotate(g.roll);
+      ctx.save(); ctx.translate(e.x, e.y); ctx.rotate(g.roll); ctx.scale(g.cy, 1 - 0.85 * (g.ex ? (g.ex.blinkL + g.ex.blinkR) / 2 : 0)); // eyes squash when you blink
       ctx.fillStyle = grad({ x: 0, y: -fw * 0.1 }, { x: 0, y: fw * 0.1 }, "#ff5c7a", "#d6143c"); heart(ctx, 0, 0, fw * 0.1 * k); ctx.fill();
       ctx.fillStyle = "rgba(255,255,255,.6)"; ctx.beginPath(); ctx.ellipse(-fw * 0.04 * k, -fw * 0.04 * k, fw * 0.02, fw * 0.012, -0.6, 0, 7); ctx.fill(); ctx.restore();
     }
@@ -257,8 +286,9 @@ function drawLook(ctx: CanvasRenderingContext2D, id: string, g: Geo, t: number) 
     const a = at(g.eyeL, fw * 0.13, 0), b = at(g.eyeR, -fw * 0.13, 0);
     ctx.lineWidth = fw * 0.02; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
   } else if (id === "hearts") {
-    for (let i = 0; i < 7; i++) {
-      const ph = (t * 0.35 + i / 7) % 1, p = at(g.top, Math.sin(i * 2.1 + t * 1.3) * fw * 0.45, fw * 0.05 + ph * fw * 0.9);
+    const n = g.ex && g.ex.smile > 0.45 ? 12 : 7; // smile and more hearts appear
+    for (let i = 0; i < n; i++) {
+      const ph = (t * 0.35 + i / n) % 1, p = at(g.top, Math.sin(i * 2.1 + t * 1.3) * fw * 0.45, fw * 0.05 + ph * fw * 0.9);
       ctx.globalAlpha = Math.sin(Math.PI * ph); ctx.fillStyle = i % 2 ? "#ff5c7a" : "#ff9ab8"; heart(ctx, p.x, p.y, fw * (0.05 + 0.025 * (i % 3))); ctx.fill();
     }
   }

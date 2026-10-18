@@ -4,7 +4,7 @@ import { Camera, Loader2 } from "lucide-react";
 import { supabase, BUCKET } from "@/lib/supabase";
 import { beep } from "@/lib/audio";
 import { liveLandmarker, type Pt } from "@/lib/vision";
-import { drawProps, PROPS } from "@/lib/magic";
+import { drawProps, PROPS, type Expr } from "@/lib/magic";
 
 const FILTERS = {
   none: { label: "Color", css: "none" },
@@ -25,6 +25,12 @@ type FilterKey = keyof typeof FILTERS;
 
 // Labels that usually mean "the laptop's own camera"
 const INTERNAL = /integrated|built-in|internal|facetime|front/i;
+// Adaptive smoothing: still face = heavy smoothing (no jitter), moving face = follows instantly (no lag)
+function smoothFace(prev: Pt[] | undefined, next: { x: number; y: number }[]): Pt[] {
+  if (!prev || prev.length !== next.length) return next.map((p) => ({ x: p.x, y: p.y }));
+  const a = Math.min(1, 0.2 + Math.hypot(next[1].x - prev[1].x, next[1].y - prev[1].y) * 30);
+  return next.map((p, i) => ({ x: prev[i].x + (p.x - prev[i].x) * a, y: prev[i].y + (p.y - prev[i].y) * a }));
+}
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export default function CameraFeed() {
@@ -47,6 +53,7 @@ export default function CameraFeed() {
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const propsRef = useRef<string[]>([]);
   const facesRef = useRef<Pt[][]>([]);
+  const exprRef = useRef<Expr[]>([]);
   const arOn = props.length > 0;
   useEffect(() => { propsRef.current = props; }, [props]);
 
@@ -117,10 +124,16 @@ export default function CameraFeed() {
           if (!v || !c || !v.videoWidth || v.readyState < 2 || now - lastT < 33) return; // ~30 fps
           lastT = now;
           if (c.width !== v.videoWidth) { c.width = v.videoWidth; c.height = v.videoHeight; }
-          facesRef.current = lm.detectForVideo(v, now).faceLandmarks.map((f) => f.map((p) => ({ x: p.x, y: p.y })));
+          const res = lm.detectForVideo(v, now);
+          facesRef.current = res.faceLandmarks.map((f, i) => smoothFace(facesRef.current[i], f));
+          exprRef.current = (res.faceBlendshapes ?? []).map((bs) => {
+            const m: Record<string, number> = {};
+            bs.categories.forEach((c) => { m[c.categoryName] = c.score; });
+            return { jaw: m.jawOpen ?? 0, blinkL: m.eyeBlinkLeft ?? 0, blinkR: m.eyeBlinkRight ?? 0, smile: ((m.mouthSmileLeft ?? 0) + (m.mouthSmileRight ?? 0)) / 2 };
+          });
           const ctx = c.getContext("2d")!;
           ctx.clearRect(0, 0, c.width, c.height);
-          drawProps(ctx, facesRef.current, propsRef.current, c.width, c.height, performance.now() / 1000);
+          drawProps(ctx, facesRef.current, propsRef.current, c.width, c.height, now / 1000, exprRef.current);
         };
         raf = requestAnimationFrame(tick);
       } catch { if (!stop) setAiState("error"); }
@@ -142,7 +155,7 @@ export default function CameraFeed() {
     ctx.filter = FILTERS[filter].css; // not supported in older Safari: photo saves unfiltered there
     ctx.drawImage(v, 0, 0);
     ctx.filter = "none";
-    drawProps(ctx, facesRef.current, propsRef.current, c.width, c.height, performance.now() / 1000); // bake the props into the photo
+    drawProps(ctx, facesRef.current, propsRef.current, c.width, c.height, performance.now() / 1000, exprRef.current); // bake the props into the photo
     return new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("Capture failed"))), "image/jpeg", 0.92));
   }
 
@@ -227,7 +240,7 @@ export default function CameraFeed() {
           </div>
         </fieldset>
 
-        <fieldset>
+        <fieldset className="min-w-0">
           <legend className="font-semibold">Face filters (live)</legend>
           <div className="mt-2 flex snap-x gap-2 overflow-x-auto pb-2">
             {PROPS.map(([id, label, icon]) => {
