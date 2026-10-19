@@ -6,14 +6,15 @@ export const setUse3d = (v: boolean) => { use3d = v; };
 
 export type Expr = { jaw: number; blinkL: number; blinkR: number; smile: number }; // live facial expression scores (0..1)
 export type BgMode = "none" | "remove" | "blur" | "color" | "scene";
-export type MagicOpts = { bg: BgMode; color: string; scene: number; smooth: number; props: string[] };
+export type MagicOpts = { bg: BgMode; color: string; scene: number; smooth: number; props: string[]; soft?: number };
 
 export const SCENES: [string, string, string][] = [
   ["Sunset", "#ff7e5f", "#feb47b"], ["Ocean", "#2193b0", "#6dd5ed"], ["Neon", "#7b2ff7", "#f107a3"],
   ["Studio", "#e6e6e6", "#9a9a9a"], ["Forest", "#134e5e", "#71b280"], ["Candy", "#ff9a9e", "#fad0c4"],
 ];
 export const PROPS: [string, string, string][] = [
-  ["dog", "Snap Dog", "🐶"], ["bear", "Glitter Bear", "🐻"], ["roblox", "Roblox", "🧢"],
+  ["stars", "Floating stars", "⭐"], ["hearts", "Floating hearts", "💕"], ["halo", "Angel", "😇"],
+  ["clownface", "Clown", "🤡"], ["dalmatian", "Dalmatian", "🐶"], ["scribble", "Scribble", "✏️"], ["metaglasses", "Meta Glasses", "🕶️"], ["zoiao", "Big eyes & lips", "👄"],
 ];
 
 // MediaPipe face-mesh landmark groups
@@ -63,7 +64,7 @@ function paintBackground(ctx: CanvasRenderingContext2D, base: HTMLCanvasElement,
   } // "remove" leaves it transparent so the frame colour shows through
 }
 
-function geometry(f: Pt[], w: number, h: number, ex?: Expr, id = 0) {
+function geometry(f: Pt[], w: number, h: number, ex?: Expr, id = 0, src?: CanvasImageSource) {
   const P = (i: number) => ({ x: f[i].x * w, y: f[i].y * h });
   let a = P(33), b = P(263);
   if (a.x > b.x) [a, b] = [b, a];
@@ -74,7 +75,7 @@ function geometry(f: Pt[], w: number, h: number, ex?: Expr, id = 0) {
   const fw = Math.hypot(l.x - r.x, l.y - r.y), up = P(13), lo = P(14);
   const cm = mid(l, r), yaw = Math.asin(Math.max(-1, Math.min(1, (P(1).x - cm.x) / (fw * 0.3)))); // head turn left/right
   return {
-    P, id, ex, yaw, cy: Math.cos(yaw * 0.9), eyeL: e1, eyeR: e2, mouth: mid(up, lo), lower: lo, open: ex ? ex.jaw * 0.35 : Math.hypot(up.x - lo.x, up.y - lo.y) / fw, chin: P(152),
+    P, id, ex, w, h, src, yaw, cy: Math.cos(yaw * 0.9), eyeL: e1, eyeR: e2, mouth: mid(up, lo), lower: lo, open: ex ? ex.jaw * 0.35 : Math.hypot(up.x - lo.x, up.y - lo.y) / fw, chin: P(152),
     eye: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, roll: Math.atan2(b.y - a.y, b.x - a.x), fw,
     top: P(10), nose: P(1), lip: P(0), cheekL: P(50), cheekR: P(280),
   };
@@ -140,13 +141,13 @@ export function renderMagic(img: HTMLImageElement, mask: HTMLCanvasElement | und
     const person = mk(w, h), pc = person.getContext("2d")!;
     pc.drawImage(base, 0, 0);
     pc.globalCompositeOperation = "destination-in";
-    pc.filter = `blur(${Math.max(1, w / 900)}px)`; // soft edge
+    pc.filter = `blur(${Math.max(0.5, (w / 900) * (o.soft ?? 1))}px)`; // soft edge
     pc.drawImage(mask, 0, 0, w, h);
     ctx.drawImage(person, 0, 0);
   } else ctx.drawImage(base, 0, 0);
 
   if (faces[0]) sampleSkin(base, w, h, faces[0]);
-  faces.forEach((f) => { const g = geometry(f, w, h); o.props.forEach((p) => drawProp(ctx, p, g, 1)); });
+  faces.forEach((f) => { const g = geometry(f, w, h, undefined, 0, base); o.props.forEach((p) => drawProp(ctx, p, g, 1)); });
   return out;
 }
 
@@ -167,11 +168,11 @@ function swing(g: ReturnType<typeof geometry>, t: number) {
   return m.ang;
 }
 
-export function drawProps(ctx: CanvasRenderingContext2D, faces: Pt[][], ids: string[], w: number, h: number, t = 0, ex: (Expr | undefined)[] = []) {
+export function drawProps(ctx: CanvasRenderingContext2D, faces: Pt[][], ids: string[], w: number, h: number, t = 0, ex: (Expr | undefined)[] = [], src?: CanvasImageSource) {
   ids.forEach((id) => { if (!pop.has(id)) pop.set(id, t); });
   [...pop.keys()].forEach((k) => { if (!ids.includes(k)) pop.delete(k); });
   faces.forEach((f, i) => {
-    const g = geometry(f, w, h, ex[i], i);
+    const g = geometry(f, w, h, ex[i], i, src);
     ids.forEach((id) => {
       const k = easeOutBack(Math.min(1, (t - (pop.get(id) ?? t - 1)) / 0.4)); // filters pop in like the real apps
       ctx.save(); ctx.translate(g.eye.x, g.eye.y); ctx.scale(k, k); ctx.translate(-g.eye.x, -g.eye.y);
@@ -373,8 +374,130 @@ function drawLook(ctx: CanvasRenderingContext2D, id: string, g: Geo, t: number) 
       const ph = (t * 0.35 + i / n) % 1, p = at(g.top, Math.sin(i * 2.1 + t * 1.3) * fw * 0.45, fw * 0.05 + ph * fw * 0.9);
       ctx.globalAlpha = Math.sin(Math.PI * ph); ctx.fillStyle = i % 2 ? "#ff5c7a" : "#ff9ab8"; heart(ctx, p.x, p.y, fw * (0.05 + 0.025 * (i % 3))); ctx.fill();
     }
+  } else if (id === "stars") {
+    for (let i = 0; i < 10; i++) {
+      const ph = (t * 0.28 + i / 10) % 1, p = at(g.top, Math.sin(i * 2.7 + t * 0.9) * fw * 0.6, -fw * 0.05 + ph * fw * 1.1);
+      const tw = 0.6 + 0.4 * Math.sin(t * 6 + i * 1.9), r = fw * (0.05 + 0.03 * (i % 3)) * tw;
+      ctx.save(); ctx.globalAlpha = Math.sin(Math.PI * ph) * 0.95; ctx.shadowColor = "rgba(255,220,120,.9)"; ctx.shadowBlur = fw * 0.06;
+      ctx.fillStyle = i % 3 === 0 ? "#fff6c2" : i % 3 === 1 ? "#ffd23f" : "#ffb3e6";
+      star(ctx, p.x, p.y, r, 5, 0.45, -Math.PI / 2 + t * (1 + (i % 3) * 0.4) + i); ctx.fill(); ctx.restore();
+    }
+  } else if (id === "clownface") {
+    // Clown selfie: the paint is semi-see-through and has holes for eyes, brows and lips, so your real face shows through
+    clownLayer = clownLayer && clownLayer.width === g.w && clownLayer.height === g.h ? clownLayer : mk(g.w, g.h);
+    const lx = clownLayer.getContext("2d")!;
+    lx.clearRect(0, 0, g.w, g.h);
+    const path = (idx: number[], grow = 1) => {
+      let cx = 0, cy = 0; idx.forEach((i) => { cx += g.P(i).x; cy += g.P(i).y; }); cx /= idx.length; cy /= idx.length;
+      lx.beginPath(); idx.forEach((i, k) => { const q = g.P(i), x = cx + (q.x - cx) * grow, y = cy + (q.y - cy) * grow; if (k) lx.lineTo(x, y); else lx.moveTo(x, y); }); lx.closePath();
+    };
+    lx.filter = `blur(${Math.max(1, fw * 0.02)}px)`;
+    lx.fillStyle = "rgba(246,242,240,.6)"; path(OVAL); lx.fill(); // thin white paint: skin texture still shows
+    for (const e of [g.eyeL, g.eyeR]) {
+      const sg = e === g.eyeL ? -1 : 1;
+      lx.save(); lx.translate(e.x, e.y); lx.rotate(g.roll); lx.scale(g.cy, 1);
+      lx.fillStyle = "rgba(108,118,170,.5)";
+      lx.beginPath(); lx.ellipse(0, fw * 0.03, fw * 0.2, fw * 0.14, sg * 0.3, 0, 7); lx.fill();
+      lx.beginPath(); lx.ellipse(sg * fw * 0.06, fw * 0.2, fw * 0.07, fw * 0.17, sg * 0.35, 0, 7); lx.fill();
+      lx.fillStyle = "rgba(176,88,56,.5)"; lx.beginPath(); lx.ellipse(0, -fw * 0.19, fw * 0.17, fw * 0.05, -sg * 0.2, 0, 7); lx.fill();
+      lx.restore();
+    }
+    const L = at(g.P(61), -fw * 0.2, fw * 0.1), R = at(g.P(291), fw * 0.2, fw * 0.1), C = at(g.lower, 0, -fw * 0.2);
+    lx.lineCap = "round"; lx.lineWidth = fw * 0.13; lx.strokeStyle = "rgba(165,62,48,.55)"; lx.beginPath(); lx.moveTo(L.x, L.y); lx.quadraticCurveTo(C.x, C.y, R.x, R.y); lx.stroke();
+    lx.globalCompositeOperation = "destination-out"; lx.filter = `blur(${Math.max(1, fw * 0.012)}px)`; lx.fillStyle = "#000";
+    path(L_EYE, 1.35); lx.fill(); path(R_EYE, 1.35); lx.fill(); // eyes
+    path([276, 283, 282, 295, 285, 336, 296, 334, 293, 300], 1.25); lx.fill(); path([46, 53, 52, 65, 55, 107, 66, 105, 63, 70], 1.25); lx.fill(); // brows
+    path(LIPS, 1.12); lx.fill(); // lips
+    lx.globalCompositeOperation = "source-over"; lx.filter = "none";
+    ctx.drawImage(clownLayer, 0, 0);
+    const ng = ctx.createRadialGradient(g.nose.x - fw * 0.03, g.nose.y - fw * 0.03, fw * 0.01, g.nose.x, g.nose.y, fw * 0.1); ng.addColorStop(0, "rgba(214,92,84,.95)"); ng.addColorStop(1, "rgba(150,48,44,.9)");
+    ctx.fillStyle = ng; ctx.beginPath(); ctx.arc(g.nose.x, g.nose.y, fw * 0.1, 0, 7); ctx.fill();
+  } else if (id === "dalmatian") {
+    // Dalmatian: white spotted ears, white spotted snout, big black nose, glitter skin
+    const sw = swing(g, t), spots = [[-0.05, 0.0, 0.05], [0.06, -0.1, 0.04], [-0.08, -0.14, 0.035], [0.02, 0.1, 0.045], [0.09, 0.06, 0.03], [-0.03, -0.06, 0.025]];
+    for (const sign of [-1, 1]) {
+      const c = at(g.top, sign * fw * 0.42, fw * 0.02);
+      ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(g.roll + sign * 0.55 + sw); ctx.scale(g.cy, 1);
+      const ear = () => { ctx.beginPath(); ctx.moveTo(-fw * 0.13, fw * 0.1); ctx.bezierCurveTo(-fw * 0.2, -fw * 0.1, -fw * 0.1, -fw * 0.3, fw * 0.02, -fw * 0.34); ctx.bezierCurveTo(fw * 0.16, -fw * 0.26, fw * 0.2, 0, fw * 0.13, fw * 0.12); ctx.bezierCurveTo(fw * 0.05, fw * 0.18, -fw * 0.07, fw * 0.18, -fw * 0.13, fw * 0.1); ctx.closePath(); };
+      ctx.shadowColor = "rgba(0,0,0,.25)"; ctx.shadowBlur = fw * 0.03; ctx.fillStyle = grad({ x: 0, y: -fw * 0.3 }, { x: 0, y: fw * 0.15 }, "#ffffff", "#dcdcdf"); ear(); ctx.fill(); ctx.shadowBlur = 0;
+      ctx.save(); ear(); ctx.clip(); ctx.fillStyle = "#111";
+      spots.forEach(([x, y, r]) => { ctx.beginPath(); ctx.ellipse(x * fw * sign, y * fw, r * fw, r * fw * 0.8, x, 0, 7); ctx.fill(); });
+      ctx.restore(); ctx.restore();
+    }
+    speckle(ctx, OVAL.map((i) => g.P(i)), t, "255,255,255", 320, fw * 0.006);
+    const pad = at(g.nose, 0, -fw * 0.06), nz = at(g.nose, 0, -fw * 0.01);
+    ctx.save(); ctx.translate(pad.x, pad.y); ctx.rotate(g.roll); ctx.scale(g.cy, 1);
+    ctx.shadowColor = "rgba(0,0,0,.25)"; ctx.shadowBlur = fw * 0.03; ctx.fillStyle = grad({ x: 0, y: -fw * 0.1 }, { x: 0, y: fw * 0.12 }, "#ffffff", "#e4e4e8");
+    ctx.beginPath(); ctx.ellipse(0, 0, fw * 0.2, fw * 0.12, 0, 0, 7); ctx.fill(); ctx.shadowBlur = 0; ctx.fillStyle = "#111";
+    [[-0.14, 0.0, 0.03], [0.15, 0.02, 0.025], [0.1, 0.07, 0.015]].forEach(([x, y, r]) => { ctx.beginPath(); ctx.ellipse(x * fw, y * fw, r * fw, r * fw * 0.8, 0, 0, 7); ctx.fill(); }); ctx.restore();
+    ctx.save(); ctx.translate(nz.x, nz.y); ctx.rotate(g.roll); ctx.scale(g.cy, 1);
+    const ng = ctx.createRadialGradient(0, -fw * 0.02, fw * 0.01, 0, 0, fw * 0.11); ng.addColorStop(0, "#454049"); ng.addColorStop(1, "#08070a");
+    ctx.fillStyle = ng; ctx.beginPath(); ctx.ellipse(0, 0, fw * 0.11, fw * 0.08, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,.55)"; ctx.beginPath(); ctx.ellipse(-fw * 0.035, -fw * 0.03, fw * 0.03, fw * 0.014, -0.3, 0, 7); ctx.fill(); ctx.restore();
+    if (g.open > 0.05) {
+      const len = fw * (0.14 + Math.min(g.open, 0.3) * 0.5) * (1 + 0.06 * Math.sin(t * 9));
+      ctx.save(); ctx.translate(g.lower.x, g.lower.y); ctx.rotate(g.roll);
+      ctx.fillStyle = grad({ x: 0, y: 0 }, { x: 0, y: len }, "#ff9db0", "#ff6f8e"); ctx.beginPath(); ctx.roundRect(-fw * 0.07, 0, fw * 0.14, len, fw * 0.07); ctx.fill(); ctx.restore();
+    }
+  } else if (id === "scribble") {
+    // Hand-drawn doodles that re-jitter several times a second, like the real filter
+    const fr = Math.floor(t * 8), J = (k: number, a: number) => (hash(fr * 131 + k * 17.3) - 0.5) * a;
+    const scrawl = (pts: Pt[], close = false, wd = fw * 0.03) => {
+      ctx.strokeStyle = "#0d0d0d"; ctx.lineWidth = wd; ctx.lineCap = "round"; ctx.lineJoin = "round";
+      for (let pass = 0; pass < 3; pass++) {
+        ctx.globalAlpha = pass ? 0.55 : 0.95; ctx.beginPath();
+        pts.forEach((p, k) => { const x = p.x + J(k + pass * 31, fw * 0.03), y = p.y + J(k + 7 + pass * 31, fw * 0.03); if (k) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
+        if (close) ctx.closePath(); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    };
+    for (const e of [g.eyeL, g.eyeR]) {
+      scrawl(Array.from({ length: 10 }, (_, k) => { const a = (k / 10) * Math.PI * 2; return at(e, Math.cos(a) * fw * 0.2, Math.sin(a) * fw * 0.17); }), true);
+      scrawl(Array.from({ length: 9 }, (_, k) => at(e, (-0.22 + k * 0.055) * fw, fw * (0.24 + (k % 2 ? 0.035 : -0.035)))), false, fw * 0.028);
+    }
+    scrawl([at(g.eyeL, fw * 0.2, 0), at(g.eyeR, -fw * 0.2, 0)]);
+    const beard = [172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397].map((i, k) => { const p = g.P(i), m = g.mouth, f = 0.2 + (k % 2 ? 0.12 : 0); return { x: p.x + (m.x - p.x) * f, y: p.y + (m.y - p.y) * f }; });
+    scrawl([at(g.P(61), -fw * 0.06, fw * 0.04), ...beard, at(g.P(291), fw * 0.06, fw * 0.04)], false, fw * 0.035);
+    scrawl([61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291].map((i) => at(g.P(i), 0, fw * 0.05)), false, fw * 0.03);
+  } else if (id === "metaglasses") {
+    // Chunky black glasses with pink lenses and a soft pink light leak over the whole picture
+    const d = Math.hypot(g.eyeR.x - g.eyeL.x, g.eyeR.y - g.eyeL.y) / 2, lw = Math.max(fw * 0.4, d * 1.55), lh = lw * 0.72;
+    ctx.save(); ctx.translate(g.eye.x, g.eye.y); ctx.rotate(g.roll); ctx.scale(g.cy, 1);
+    const lens = (cx: number) => { ctx.beginPath(); ctx.roundRect(cx - lw / 2, -lh * 0.45, lw, lh, lw * 0.14); };
+    for (const cx of [-d, d]) {
+      lens(cx); const lg = ctx.createLinearGradient(cx - lw / 2, -lh * 0.45, cx + lw / 2, lh * 0.55); lg.addColorStop(0, "rgba(214,150,214,.55)"); lg.addColorStop(1, "rgba(170,100,190,.5)");
+      ctx.fillStyle = lg; ctx.fill(); ctx.lineWidth = fw * 0.04; ctx.strokeStyle = "#131316"; ctx.stroke();
+    }
+    ctx.strokeStyle = "#131316"; ctx.lineCap = "round"; ctx.lineWidth = fw * 0.04; ctx.beginPath(); ctx.moveTo(-d + lw / 2, -lh * 0.2); ctx.lineTo(d - lw / 2, -lh * 0.2); ctx.stroke();
+    for (const sg of [-1, 1]) {
+      ctx.lineWidth = fw * 0.03; ctx.beginPath(); ctx.moveTo(sg * (d + lw / 2), -lh * 0.3); ctx.lineTo(sg * (d + lw / 2 + fw * 0.12), -lh * 0.1); ctx.stroke();
+      ctx.fillStyle = "#2b2b30"; ctx.beginPath(); ctx.arc(sg * (d + lw / 2), -lh * 0.32, fw * 0.024, 0, 7); ctx.fill();
+      ctx.fillStyle = "#74747e"; ctx.beginPath(); ctx.arc(sg * (d + lw / 2), -lh * 0.32, fw * 0.01, 0, 7); ctx.fill();
+    }
+    ctx.restore();
+    ctx.save(); ctx.globalCompositeOperation = "screen";
+    const lk = ctx.createLinearGradient(0, 0, g.w, g.h); lk.addColorStop(0, "rgba(255,140,200,.28)"); lk.addColorStop(0.5, "rgba(255,180,160,.08)"); lk.addColorStop(1, "rgba(255,150,210,.3)");
+    ctx.fillStyle = lk; ctx.fillRect(0, 0, g.w, g.h); ctx.restore();
+  } else if (id === "zoiao" && g.src) {
+    // Big eyes and big lips: magnify the live picture under each eye and the mouth
+    bulge(ctx, g.src, g.eyeL, fw * 0.25, fw * 0.18, 2.3); bulge(ctx, g.src, g.eyeR, fw * 0.25, fw * 0.18, 2.3); bulge(ctx, g.src, g.mouth, fw * 0.45, fw * 0.28, 2.1);
   }
   ctx.restore();
+}
+
+let clownLayer: HTMLCanvasElement | null = null; // reused paint layer for the clown filter
+let lookFilter = "none"; // the live colour filter, so magnified patches match the video
+export const setLookFilter = (f: string) => { lookFilter = f; };
+function bulge(ctx: CanvasRenderingContext2D, src: CanvasImageSource, c: Pt, rx: number, ry: number, zoom: number) {
+  const W = Math.max(2, Math.round(rx * 2)), H = Math.max(2, Math.round(ry * 2));
+  const tmp = mk(W, H), tx = tmp.getContext("2d")!;
+  tx.filter = lookFilter === "none" ? "blur(1.2px)" : `${lookFilter} blur(1.2px)`;
+  tx.drawImage(src, c.x - rx / zoom, c.y - ry / zoom, (2 * rx) / zoom, (2 * ry) / zoom, 0, 0, W, H);
+  tx.filter = "none"; tx.globalCompositeOperation = "destination-in";
+  tx.save(); tx.translate(W / 2, H / 2); tx.scale(1, ry / rx);
+  const gr = tx.createRadialGradient(0, 0, rx * 0.35, 0, 0, rx); gr.addColorStop(0, "rgba(0,0,0,1)"); gr.addColorStop(1, "rgba(0,0,0,0)");
+  tx.fillStyle = gr; tx.fillRect(-rx, -rx, rx * 2, rx * 2); tx.restore();
+  ctx.drawImage(tmp, c.x - rx, c.y - ry);
 }
 
 const hash = (n: number) => { const x = Math.sin(n * 127.1) * 43758.5453; return x - Math.floor(x); };

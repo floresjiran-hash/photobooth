@@ -1,10 +1,10 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Camera, Loader2 } from "lucide-react";
+import { Camera, Loader2, Square } from "lucide-react";
 import { supabase, BUCKET } from "@/lib/supabase";
 import { beep } from "@/lib/audio";
 import { liveLandmarker, type Pt } from "@/lib/vision";
-import { drawProps, PROPS, sampleSkin, setUse3d, type Expr } from "@/lib/magic";
+import { drawProps, PROPS, sampleSkin, setLookFilter, setUse3d, type Expr } from "@/lib/magic";
 
 const FILTERS = {
   none: { label: "Color", css: "none" },
@@ -22,6 +22,7 @@ const FILTERS = {
   negative: { label: "Negative", css: "invert(1)" },
 } as const;
 type FilterKey = keyof typeof FILTERS;
+const USE_3D = false; // the 3D dog / bear / cap models are switched off for now (code is kept in lib/face3d.ts)
 
 // Labels that usually mean "the laptop's own camera"
 const INTERNAL = /integrated|built-in|internal|facetime|front/i;
@@ -46,6 +47,8 @@ export default function CameraFeed() {
   const [count, setCount] = useState<number | null>(null);
   const [flash, setFlash] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [pauseBetween, setPauseBetween] = useState(true); // wait for "Next shot" so the effect can be changed every time
+  const [waiting, setWaiting] = useState(false);
   const [status, setStatus] = useState("");
   const [last, setLast] = useState<string[]>([]);
   const [props, setProps] = useState<string[]>([]);
@@ -58,7 +61,20 @@ export default function CameraFeed() {
   const gl3Ref = useRef<HTMLCanvasElement>(null);
   const face3dRef = useRef<{ render: (l: Pt[][], m: number[][], ids: string[], w: number, h: number, t: number, jaw: number[]) => void; clear: () => void; nextVariant: () => void; dispose: () => void } | null>(null);
   const arOn = props.length > 0;
+  const filterRef = useRef("none");
+  const filterKeyRef = useRef<FilterKey>("none");
+  const watermarkRef = useRef(true);
+  const cancelRef = useRef(false);
+  const nextRef = useRef<(() => void) | null>(null);
   useEffect(() => { propsRef.current = props; }, [props]);
+  useEffect(() => { filterRef.current = FILTERS[filter].css; filterKeyRef.current = filter; }, [filter]);
+  useEffect(() => { watermarkRef.current = watermark; }, [watermark]);
+  useEffect(() => { // Space / Enter = next shot
+    if (!waiting) return;
+    const k = (e: KeyboardEvent) => { if (e.code === "Space" || e.key === "Enter") { e.preventDefault(); nextRef.current?.(); } };
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, [waiting]);
 
   // --- Device discovery + auto-select external cameras -------------------
   const refreshDevices = useCallback(async (initial = false) => {
@@ -120,7 +136,7 @@ export default function CameraFeed() {
         setAiState("loading");
         const lm = await liveLandmarker();
         if (stop) return;
-        try { // real 3D props; falls back to the flat versions if WebGL isn't available
+        if (USE_3D) try { // real 3D props; falls back to the flat versions if WebGL isn't available
           const { createFace3D } = await import("@/lib/face3d");
           if (stop) return;
           if (gl3Ref.current) { face3dRef.current ??= createFace3D(gl3Ref.current); setUse3d(true); }
@@ -143,7 +159,8 @@ export default function CameraFeed() {
           if (facesRef.current[0] && frameN++ % 15 === 0) sampleSkin(v, v.videoWidth, v.videoHeight, facesRef.current[0]); // skin colour for the Roblox face
           const ctx = c.getContext("2d")!;
           ctx.clearRect(0, 0, c.width, c.height);
-          drawProps(ctx, facesRef.current, propsRef.current, c.width, c.height, now / 1000, exprRef.current);
+          setLookFilter(filterRef.current);
+          drawProps(ctx, facesRef.current, propsRef.current, c.width, c.height, now / 1000, exprRef.current, v);
           face3dRef.current?.render(facesRef.current, matsRef.current, propsRef.current, v.videoWidth, v.videoHeight, now / 1000, exprRef.current.map((e) => e.jaw));
         };
         raf = requestAnimationFrame(tick);
@@ -163,10 +180,11 @@ export default function CameraFeed() {
     c.width = v.videoWidth;
     c.height = v.videoHeight;
     const ctx = c.getContext("2d")!;
-    ctx.filter = FILTERS[filter].css; // not supported in older Safari: photo saves unfiltered there
+    ctx.filter = filterRef.current; // not supported in older Safari: photo saves unfiltered there
     ctx.drawImage(v, 0, 0);
     ctx.filter = "none";
-    drawProps(ctx, facesRef.current, propsRef.current, c.width, c.height, performance.now() / 1000, exprRef.current); // bake the props into the photo
+    setLookFilter(filterRef.current);
+    drawProps(ctx, facesRef.current, propsRef.current, c.width, c.height, performance.now() / 1000, exprRef.current, v); // bake the props into the photo
     if (face3dRef.current && gl3Ref.current) ctx.drawImage(gl3Ref.current, 0, 0, c.width, c.height); // and the 3D models
     return new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("Capture failed"))), "image/jpeg", 0.92));
   }
@@ -178,41 +196,56 @@ export default function CameraFeed() {
     const { data } = supabase.storage.from(BUCKET).getPublicUrl(path);
     const { error: dbError } = await supabase.from("photos").insert({
       session_id: sessionId, shot_index: index, image_url: data.publicUrl,
-      storage_path: path, filter, watermarked: watermark,
+      storage_path: path, filter: filterKeyRef.current, watermarked: watermarkRef.current,
     });
     if (dbError) throw dbError;
     return data.publicUrl;
+  }
+
+  function stopSession() {
+    cancelRef.current = true;
+    nextRef.current?.();
   }
 
   async function runSession() {
     if (!videoRef.current?.videoWidth) return setStatus("Camera isn't ready yet.");
     setBusy(true);
     setLast([]);
+    cancelRef.current = false;
     const sessionId = crypto.randomUUID();
     const uploads: Promise<string>[] = [];
     try {
       for (let i = 1; i <= shots; i++) {
+        if (i > 1 && pauseBetween) { // wait here so the operator can change the filter or face effect before the next shot
+          setStatus(`Shot ${i} of ${shots}: change your effect, then press Next shot`);
+          setWaiting(true);
+          await new Promise<void>((res) => { nextRef.current = res; });
+          setWaiting(false);
+          if (cancelRef.current) break;
+        }
         setStatus(`Shot ${i} of ${shots}`);
-        for (let n = 3; n >= 1; n--) {
+        for (let n = 3; n >= 1 && !cancelRef.current; n--) {
           setCount(n);
           beep(660, 0.12);
           await sleep(1000);
         }
+        if (cancelRef.current) break;
         setCount(null);
         beep(1200, 0.25);
         setFlash(true);
-        const blob = await grab();
+        const blob = await grab(); // uses whatever filter and effects are on right now
         setTimeout(() => setFlash(false), 350);
         uploads.push(upload(blob, sessionId, i)); // upload while the next countdown runs
         await sleep(800);
       }
       setStatus("Uploading…");
       setLast(await Promise.all(uploads));
-      setStatus("Done. Photos are in the gallery.");
+      setStatus(cancelRef.current ? (uploads.length ? `Stopped after ${uploads.length} photo${uploads.length > 1 ? "s" : ""}. They're in the gallery.` : "Stopped.") : "Done. Photos are in the gallery.");
     } catch (e) {
       setStatus(`Upload failed: ${(e as Error).message}`);
     } finally {
       setBusy(false);
+      setWaiting(false);
       setCount(null);
     }
   }
@@ -245,7 +278,7 @@ export default function CameraFeed() {
           <legend className="font-semibold">Filter</legend>
           <div className="mt-2 grid grid-cols-3 gap-2">
             {(Object.keys(FILTERS) as FilterKey[]).map((k) => (
-              <button key={k} onClick={() => setFilter(k)} disabled={busy} aria-pressed={filter === k}
+              <button key={k} onClick={() => setFilter(k)} aria-pressed={filter === k}
                 className={`rounded-xl px-2 py-2 text-xs font-semibold border-2 ${filter === k ? "border-cobalt bg-cobalt text-white" : "border-ink/15"}`}>
                 {FILTERS[k].label}
               </button>
@@ -259,13 +292,13 @@ export default function CameraFeed() {
             {PROPS.map(([id, label, icon]) => {
               const on = props.includes(id);
               return (
-                <button key={id} title={label} aria-label={label} aria-pressed={on} disabled={busy}
+                <button key={id} title={label} aria-label={label} aria-pressed={on}
                   onClick={() => setProps((l) => (on ? l.filter((x) => x !== id) : [...l, id]))}
                   className={`flex w-16 shrink-0 snap-start flex-col items-center gap-1 rounded-xl border-2 py-2 text-[10px] font-semibold ${on ? "border-cobalt bg-cobalt/10" : "border-ink/15"}`}><span className="text-2xl leading-none">{icon}</span>{label}</button>
               );
             })}
           </div>
-          {arOn && <button onClick={() => setProps([])} disabled={busy} className="mt-2 text-sm font-semibold text-cobalt underline">Clear props</button>}
+          {arOn && <button onClick={() => setProps([])} className="mt-2 text-sm font-semibold text-cobalt underline">Clear props</button>}
           {aiState === "loading" && <p className="mt-2 flex items-center gap-2 text-xs text-ink/60"><Loader2 size={12} className="animate-spin" /> Loading face tracking…</p>}
           {aiState === "error" && <p role="alert" className="mt-2 text-xs text-red-600">Couldn't load face tracking. Check the internet connection.</p>}
         </fieldset>
@@ -281,14 +314,34 @@ export default function CameraFeed() {
         </fieldset>
 
         <label className="flex items-center gap-3">
+          <input type="checkbox" checked={pauseBetween} onChange={(e) => setPauseBetween(e.target.checked)} disabled={busy} className="size-5 accent-cobalt" />
+          <span>Pause between shots (change effects each time)</span>
+        </label>
+
+        <label className="flex items-center gap-3">
           <input type="checkbox" checked={watermark} onChange={(e) => setWatermark(e.target.checked)} className="size-5 accent-cobalt" />
           <span>Watermark until paid</span>
         </label>
 
-        <button onClick={runSession} disabled={busy || !deviceId}
-          className="w-full inline-flex items-center justify-center gap-2 rounded-full bg-sodium py-4 text-lg font-bold text-ink disabled:opacity-50">
-          {busy ? <Loader2 className="animate-spin" /> : <Camera />} {busy ? "Shooting…" : "Start photo strip"}
-        </button>
+        {!busy ? (
+          <button onClick={runSession} disabled={!deviceId}
+            className="w-full inline-flex items-center justify-center gap-2 rounded-full bg-sodium py-4 text-lg font-bold text-ink disabled:opacity-50">
+            <Camera /> Start photo strip
+          </button>
+        ) : (
+          <div className="space-y-2">
+            {waiting ? (
+              <button onClick={() => nextRef.current?.()} className="w-full inline-flex items-center justify-center gap-2 rounded-full bg-sodium py-4 text-lg font-bold text-ink">
+                <Camera /> Next shot (Space)
+              </button>
+            ) : (
+              <p className="flex items-center justify-center gap-2 rounded-full bg-paper py-3 text-sm font-semibold"><Loader2 className="animate-spin" size={16} /> Shooting. You can change effects now.</p>
+            )}
+            <button onClick={stopSession} className="w-full inline-flex items-center justify-center gap-2 rounded-full border-2 border-red-500 py-3 font-bold text-red-600">
+              <Square size={16} /> Stop
+            </button>
+          </div>
+        )}
 
         {last.length > 0 && (
           <div className="grid grid-cols-4 gap-1">

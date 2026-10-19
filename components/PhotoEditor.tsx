@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, Loader2, Lock, Printer, RotateCcw, Trash2, Plus } from "lucide-react";
+import { Download, Loader2, Lock, Maximize2, Printer, RotateCcw, Trash2, Plus, ZoomIn, ZoomOut } from "lucide-react";
 import type { Photo } from "@/lib/supabase";
 import PaymentModal from "./PaymentModal";
 import { analyze } from "@/lib/vision";
@@ -152,6 +152,15 @@ export default function PhotoEditor({ photo, siblings, onRefresh }: { photo: Pho
   const [scene, setScene] = useState(0);
   const [smooth, setSmooth] = useState(0);
   const [magicProps, setMagicProps] = useState<string[]>([]);
+  const [edge, setEdge] = useState(1);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const zoomRef = useRef(1);
+  zoomRef.current = zoom;
+  const panelRef = useRef<HTMLDivElement>(null);
+  const pts = useRef(new Map<number, { x: number; y: number }>());
+  const pinch = useRef<{ d: number; z: number } | null>(null);
+  const panning = useRef<{ sx: number; sy: number; px: number; py: number } | null>(null);
   const [proc, setProc] = useState<HTMLCanvasElement[] | null>(null);
   const [magicStatus, setMagicStatus] = useState<"idle" | "working" | "ready" | "error">("idle");
 
@@ -171,14 +180,14 @@ export default function PhotoEditor({ photo, siblings, onRefresh }: { photo: Pho
         for (let i = 0; i < imgs.length; i++) {
           const a = await analyze(imgs[i], urls[i], bgMode !== "none", smooth > 0 || magicProps.length > 0);
           if (cancelled) return;
-          outs.push(renderMagic(imgs[i], a.mask, a.faces ?? [], { bg: bgMode, color: bgColor, scene, smooth, props: magicProps }));
+          outs.push(renderMagic(imgs[i], a.mask, a.faces ?? [], { bg: bgMode, color: bgColor, scene, smooth, props: magicProps, soft: edge }));
         }
         if (!cancelled) { setProc(outs); setMagicStatus("ready"); }
       } catch { if (!cancelled) { setProc(null); setMagicStatus("error"); } }
     }, 250);
     return () => { cancelled = true; clearTimeout(t); };
     // eslint-disable-next-line
-  }, [imgs, urlKey, bgMode, bgColor, scene, smooth, magicProps]);
+  }, [imgs, urlKey, bgMode, bgColor, scene, smooth, magicProps, edge]);
 
   const pickTheme = (t: Theme) => { setTheme(t); setGrad(null); setBg(THEMES[t].bg); setTextColor(THEMES[t].text); };
   const reset = () => { setLayout("strip"); setStripCount(4); setGapPx(16); setRadius(0); pickTheme("minimal"); setBorder(40); setFilter("none"); setFs(1); setStickers([]); setSelected(null); setBgMode("none"); setSmooth(0); setMagicProps([]); };
@@ -260,16 +269,58 @@ export default function PhotoEditor({ photo, siblings, onRefresh }: { photo: Pho
     const c = canvasRef.current!, r = c.getBoundingClientRect();
     return { x: ((e.clientX - r.left) / r.width) * c.width, y: ((e.clientY - r.top) / r.height) * c.height, W: c.width, H: c.height };
   };
+  const clampPan = (p: { x: number; y: number }, z: number) => {
+    const c = canvasRef.current; if (!c) return p;
+    const mx = ((z - 1) * c.offsetWidth) / 2, my = ((z - 1) * c.offsetHeight) / 2;
+    return { x: Math.max(-mx, Math.min(mx, p.x)), y: Math.max(-my, Math.min(my, p.y)) };
+  };
+  /** Zoom while keeping the point under (qx, qy), measured from the panel centre, where it is. */
+  const setZoomAt = (z2: number, qx = 0, qy = 0) => {
+    const z = Math.max(1, Math.min(5, z2)), r = z / zoomRef.current;
+    setPan((p) => (z === 1 ? { x: 0, y: 0 } : clampPan({ x: qx - r * (qx - p.x), y: qy - r * (qy - p.y) }, z)));
+    setZoom(z);
+  };
+  useEffect(() => { // mouse wheel / trackpad zoom
+    const el = panelRef.current; if (!el) return;
+    const onWheel = (ev: WheelEvent) => {
+      ev.preventDefault();
+      const r = el.getBoundingClientRect();
+      setZoomAt(zoomRef.current * (ev.deltaY < 0 ? 1.15 : 1 / 1.15), ev.clientX - (r.left + r.width / 2), ev.clientY - (r.top + r.height / 2));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+    // eslint-disable-next-line
+  }, []);
+
   function onDown(e: React.PointerEvent) {
+    pts.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    if (pts.current.size === 2) { // two fingers: pinch to zoom
+      const [a, b] = [...pts.current.values()];
+      pinch.current = { d: Math.hypot(a.x - b.x, a.y - b.y), z: zoomRef.current }; drag.current = null; panning.current = null; return;
+    }
     const { x, y, W, H } = toCanvas(e);
     const h = [...stickers].reverse().find((s) => hit(s, x, y, W, H));
     setSelected(h?.id ?? null);
-    if (h) { setTab("props"); drag.current = { id: h.id, dx: h.nx * W - x, dy: h.ny * H - y }; (e.target as HTMLElement).setPointerCapture(e.pointerId); }
+    if (h) { setTab("props"); drag.current = { id: h.id, dx: h.nx * W - x, dy: h.ny * H - y }; }
+    else if (zoomRef.current > 1) panning.current = { sx: e.clientX, sy: e.clientY, px: pan.x, py: pan.y }; // drag empty space to move around
   }
   function onMove(e: React.PointerEvent) {
+    if (pts.current.has(e.pointerId)) pts.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch.current && pts.current.size === 2) { const [a, b] = [...pts.current.values()]; setZoomAt(pinch.current.z * (Math.hypot(a.x - b.x, a.y - b.y) / pinch.current.d)); return; }
+    if (panning.current) { const p = panning.current; setPan(clampPan({ x: p.px + e.clientX - p.sx, y: p.py + e.clientY - p.sy }, zoomRef.current)); return; }
     if (!drag.current) return;
     const { x, y, W, H } = toCanvas(e), d = drag.current;
     setStickers((l) => l.map((s) => (s.id === d.id ? { ...s, nx: (x + d.dx) / W, ny: (y + d.dy) / H } : s)));
+  }
+  function onUp(e: React.PointerEvent) {
+    pts.current.delete(e.pointerId);
+    if (pts.current.size < 2) pinch.current = null;
+    drag.current = null; panning.current = null;
+  }
+  function onDbl(e: React.MouseEvent) { // double-click / double-tap: zoom in or back out
+    const r = panelRef.current!.getBoundingClientRect();
+    if (zoomRef.current > 1) setZoomAt(1); else setZoomAt(2.5, e.clientX - (r.left + r.width / 2), e.clientY - (r.top + r.height / 2));
   }
   const patch = (id: number, p: Partial<Sticker>) => setStickers((l) => l.map((s) => (s.id === id ? { ...s, ...p } : s)));
   const add = (s: Omit<Sticker, "id">) => { const id = Date.now(); setStickers((l) => [...l, { ...s, id }]); setSelected(id); };
@@ -303,9 +354,15 @@ export default function PhotoEditor({ photo, siblings, onRefresh }: { photo: Pho
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_400px]">
-      <div className="relative grid place-items-center rounded-3xl bg-ink/[0.04] p-6 ring-1 ring-ink/5 lg:sticky lg:top-6 lg:self-start">
-        <canvas ref={canvasRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={() => (drag.current = null)}
-          className="max-h-[78vh] max-w-full touch-none rounded-md shadow-2xl" aria-label="Photo preview" />
+      <div ref={panelRef} className="relative grid place-items-center overflow-hidden rounded-3xl bg-ink/[0.04] p-6 ring-1 ring-ink/5 lg:sticky lg:top-6 lg:self-start">
+        <canvas ref={canvasRef} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onDoubleClick={onDbl}
+          className="max-h-[78vh] max-w-full touch-none rounded-md shadow-2xl" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, cursor: zoom > 1 ? "grab" : "default" }} aria-label="Photo preview" />
+        <div className="absolute bottom-4 right-4 z-10 flex items-center gap-1 rounded-full bg-white/90 p-1 shadow">
+          <button aria-label="Zoom out" onClick={() => setZoomAt(zoom / 1.3)} className="rounded-full p-2 hover:bg-ink/5"><ZoomOut size={16} /></button>
+          <span className="w-12 text-center text-xs font-semibold tabular-nums">{Math.round(zoom * 100)}%</span>
+          <button aria-label="Zoom in" onClick={() => setZoomAt(zoom * 1.3)} className="rounded-full p-2 hover:bg-ink/5"><ZoomIn size={16} /></button>
+          <button aria-label="Fit to screen" title="Fit" onClick={() => setZoomAt(1)} className="rounded-full p-2 hover:bg-ink/5"><Maximize2 size={16} /></button>
+        </div>
         {magicStatus === "working" && (
           <span className="absolute left-4 top-4 inline-flex items-center gap-2 rounded-full bg-ink/80 px-3 py-1.5 text-xs font-semibold text-white"><Loader2 size={14} className="animate-spin" /> Applying magic…</span>
         )}
@@ -400,6 +457,7 @@ export default function PhotoEditor({ photo, siblings, onRefresh }: { photo: Pho
                 </div>
               )}
               {bgMode === "remove" && <p className="mt-2 text-xs text-ink/60">Removed areas show your frame color. Change it in the Style tab.</p>}
+              {bgMode !== "none" && <div className="mt-3"><Slider label="Edge softness" value={edge} min={0.3} max={4} step={0.1} onChange={setEdge} /></div>}
             </section>
             <section className="space-y-2">
               <h3 className={h3}>Skin smoothing</h3>
