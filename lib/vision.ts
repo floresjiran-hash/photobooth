@@ -191,3 +191,52 @@ export async function analyze(img: HTMLImageElement, key: string, needMask: bool
   if (needFaces && !a.faces) a.faces = await facesFor(img);
   return a;
 }
+
+// ---------- Real-time person mask for the live camera ----------
+let liveSegP: Promise<ImageSegmenter> | null = null;
+const liveSegmenter = () => once(() => load().then(async ({ mp, files }) => {
+  const make = (model: string) => withFallback((delegate) => mp.ImageSegmenter.createFromOptions(files, {
+    baseOptions: { modelAssetPath: model, delegate }, runningMode: "VIDEO", outputConfidenceMasks: true, outputCategoryMask: false,
+  }));
+  try { return await make(SEG_MULTI); } catch { return await make(SEG_LITE); }
+}), liveSegP, (p) => { liveSegP = p; });
+
+/** update() refreshes a small alpha canvas (person = opaque), smoothed over time so edges don't flicker. */
+export async function createLiveSegmenter() {
+  const seg = await liveSegmenter();
+  let small: HTMLCanvasElement | null = null, data: ImageData | null = null, prev: Float32Array | null = null, flip: boolean | null = null;
+  return {
+    get mask() { return small; },
+    update(video: HTMLVideoElement, ts: number) {
+      const res = seg.segmentForVideo(video, ts);
+      const masks = res.confidenceMasks ?? [];
+      if (!masks.length) return;
+      const w = masks[0].width, h = masks[0].height;
+      if (!small || !data || !prev || small.width !== w || small.height !== h) { small = canvasOf(w, h); data = small.getContext("2d")!.createImageData(w, h); prev = new Float32Array(w * h); }
+      const cur = new Float32Array(w * h);
+      if (masks.length >= 2) {
+        const bg = masks[0].getAsFloat32Array();
+        for (let i = 0; i < cur.length; i++) cur[i] = 1 - bg[i];
+      } else {
+        const v = masks[0].getAsFloat32Array();
+        if (flip === null) { // decide once which way the single mask points
+          let c = 0, cn = 0, e = 0, en = 0;
+          for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+            const val = v[y * w + x];
+            if (x > w * 0.3 && x < w * 0.7 && y > h * 0.25 && y < h * 0.75) { c += val; cn++; } else if (x < w * 0.08 || x > w * 0.92 || y < h * 0.08 || y > h * 0.92) { e += val; en++; }
+          }
+          flip = c / Math.max(cn, 1) - e / Math.max(en, 1) < 0;
+        }
+        for (let i = 0; i < cur.length; i++) cur[i] = flip ? 1 - v[i] : v[i];
+      }
+      masks.forEach((m) => m.close());
+      (res as { close?: () => void }).close?.();
+      for (let i = 0; i < cur.length; i++) {
+        const p = prev[i] * 0.35 + cur[i] * 0.65; prev[i] = p;
+        const t = Math.min(1, Math.max(0, (p - 0.22) / 0.4));
+        data.data[i * 4 + 3] = Math.round(t * t * (3 - 2 * t) * 255);
+      }
+      small.getContext("2d")!.putImageData(data, 0, 0);
+    },
+  };
+}
