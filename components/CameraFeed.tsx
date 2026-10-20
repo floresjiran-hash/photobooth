@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Camera, ImagePlus, Loader2, Maximize2, Minimize2, SlidersHorizontal, Square } from "lucide-react";
-import { supabase, BUCKET } from "@/lib/supabase";
+import { staffHeaders } from "@/lib/boothKey";
 import { beep } from "@/lib/audio";
 import { createLiveSegmenter, liveLandmarker, type Pt } from "@/lib/vision";
 import { LIVE_BGS, paintBg, type BgId } from "@/lib/livebg";
@@ -263,17 +263,20 @@ export default function CameraFeed() {
     return new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("Capture failed"))), "image/jpeg", 0.92));
   }
 
+  // Photos go through the server, which checks the owner login or the rental key before saving anything
   async function upload(blob: Blob, sessionId: string, index: number) {
-    const path = `${sessionId}/${index}.jpg`;
-    const { error } = await supabase.storage.from(BUCKET).upload(path, blob, { contentType: "image/jpeg" });
-    if (error) throw error;
-    const { data } = supabase.storage.from(BUCKET).getPublicUrl(path);
-    const { error: dbError } = await supabase.from("photos").insert({
-      session_id: sessionId, shot_index: index, image_url: data.publicUrl,
-      storage_path: path, filter: filterKeyRef.current, watermarked: watermarkRef.current,
-    });
-    if (dbError) throw dbError;
-    return data.publicUrl;
+    const headers = await staffHeaders();
+    if (!headers) throw new Error("Not signed in");
+    const form = new FormData();
+    form.append("file", blob, `${index}.jpg`);
+    form.append("sessionId", sessionId);
+    form.append("index", String(index));
+    form.append("filter", filterKeyRef.current);
+    form.append("watermarked", String(watermarkRef.current));
+    const res = await fetch("/api/booth?r=upload", { method: "POST", headers, body: form });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(j.error ?? "Upload failed");
+    return j.url as string;
   }
 
   function stopSession() {
