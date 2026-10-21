@@ -99,10 +99,21 @@ async function ownerKeys(req: Request) {
   return json({ error: "Unknown action" }, 400);
 }
 
+// GET /api/booth?r=health : shows whether the server is set up (only yes/no answers, no secrets)
+async function health() {
+  const out: Record<string, unknown> = { ok: true, hasUrl: !!process.env.NEXT_PUBLIC_SUPABASE_URL, hasSecretKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY, hasOwnerEmail: !!process.env.NEXT_PUBLIC_ADMIN_EMAIL };
+  try {
+    const { error } = await serverDb().from("booth_keys").select("id").limit(1);
+    out.keysTable = error ? `problem: ${error.message}` : "ok";
+  } catch (e) { out.keysTable = `problem: ${(e as Error).message}`; }
+  return json(out);
+}
+
 // One endpoint for everything: /api/booth?r=keys/validate | upload | staff | owner/keys
 async function handler(req: Request) {
   try {
     const route = `${req.method} ${new URL(req.url).searchParams.get("r") ?? ""}`;
+    if (route === "GET health") return await health();
     if (route === "POST keys/validate") return await validate(req);
     if (route === "POST upload") return await upload(req);
     if (route === "POST staff") return await staff(req);

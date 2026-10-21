@@ -29,8 +29,11 @@ export default function OwnerKeys() {
   const api = useCallback(async (method: string, body?: unknown) => {
     const { data } = await supabase.auth.getSession();
     const res = await fetch("/api/booth?r=owner/keys", { method, headers: { "Content-Type": "application/json", Authorization: `Bearer ${data.session?.access_token ?? ""}` }, body: body ? JSON.stringify(body) : undefined });
-    const j = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(j.error ?? "Something went wrong");
+    const text = await res.text();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let j: Record<string, any> = {};
+    try { j = JSON.parse(text); } catch { /* not JSON */ }
+    if (!res.ok) throw new Error(j.error ?? `Server answered ${res.status}${res.status === 404 ? ": the file app/api/booth/route.ts is missing on this site" : `: ${text.slice(0, 120)}`}`);
     return j;
   }, []);
   const load = useCallback(async () => { try { setRows((await api("GET")).keys); setMsg(""); } catch (e) { setMsg((e as Error).message); } }, [api]);
