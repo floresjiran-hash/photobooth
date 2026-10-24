@@ -42,13 +42,16 @@ export default function GalleryView() {
   return (
     <main className="mx-auto max-w-7xl p-4 sm:p-8">
       <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
-        <h1 className="font-display text-4xl font-extrabold">Today's photos</h1>
+        <div>
+          <p className="text-sm font-bold uppercase tracking-widest text-tomato">The photo wall</p>
+          <h1 className="text-5xl font-black leading-none">Today's photos <span className="ml-2 inline-block rounded-full border-2 border-ink bg-sodium px-3 py-1 align-middle font-sans text-sm font-bold">{filtered.length}</span></h1>
+        </div>
         <div className="flex flex-wrap gap-2">
           <label className="relative">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink/50" />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Photo ID or time (e.g. 3:45)" className="w-64 rounded-full border-2 border-ink/15 bg-white py-2 pl-9 pr-4" aria-label="Search photos" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Photo ID or time (e.g. 3:45)" className="w-64 rounded-full border-2 border-ink bg-white py-2 pl-9 pr-4" aria-label="Search photos" />
           </label>
-          <input type="date" value={day} onChange={(e) => setDay(e.target.value)} className="rounded-full border-2 border-ink/15 bg-white px-4 py-2" aria-label="Filter by date" />
+          <input type="date" value={day} onChange={(e) => setDay(e.target.value)} className="rounded-full border-2 border-ink bg-white px-4 py-2" aria-label="Filter by date" />
         </div>
       </header>
       <GalleryGrid photos={filtered} onSelect={setSelected} />
